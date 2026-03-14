@@ -1316,6 +1316,9 @@
         let latestStatus = null;
         let latestOpenPosition = null;
         let latestMarketState = null;
+        let latestMonitoredCoin = null;
+        let latestCoinSeries = [];
+        const coinSeriesCache = {};
         const startTime = new Date('2026-03-10T12:00:00+09:00');
         const initialBalance = 10;
         const displayCapital = 99.979;
@@ -1466,6 +1469,27 @@
                 return Number(data.price) || null;
             } catch (error) {
                 return null;
+            }
+        }
+
+        async function getCoinSeries(symbol) {
+            if (!symbol) return [];
+            const now = Date.now();
+            const cached = coinSeriesCache[symbol];
+            if (cached && now - cached.ts < 60000) {
+                return cached.series;
+            }
+            try {
+                const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=144`, { cache: 'no-store' });
+                const rows = await response.json();
+                const series = Array.isArray(rows) ? rows.map((k) => ({
+                    time: new Date(Number(k[0])).toISOString(),
+                    price: Number(k[4])
+                })).filter((x) => Number.isFinite(x.price)) : [];
+                coinSeriesCache[symbol] = { ts: now, series };
+                return series;
+            } catch (error) {
+                return [];
             }
         }
 
@@ -1753,10 +1777,20 @@
 
         function updateChart(trades) {
             const ctx = document.getElementById('balanceChart').getContext('2d');
-            const series = buildChartSeries(trades, chartScope);
-            const labels = [series.startLabel, ...series.history.map((point) => formatChartTime(point.time))];
-            const balances = [series.startBalance, ...series.history.map((point) => point.balance)];
-            document.getElementById('chartModeLabel').textContent = chartScope === '12h' ? '12小時軌跡' : '全時段軌跡';
+
+            let labels = [];
+            let balances = [];
+            if (Array.isArray(latestCoinSeries) && latestCoinSeries.length > 1 && latestMonitoredCoin) {
+                labels = latestCoinSeries.map((point) => formatChartTime(point.time));
+                balances = latestCoinSeries.map((point) => point.price);
+                document.getElementById('chartModeLabel').textContent = `12小時幣價（${latestMonitoredCoin.replace('USDT','')}）`;
+            } else {
+                const series = buildChartSeries(trades, chartScope);
+                labels = [series.startLabel, ...series.history.map((point) => formatChartTime(point.time))];
+                balances = [series.startBalance, ...series.history.map((point) => point.balance)];
+                document.getElementById('chartModeLabel').textContent = chartScope === '12h' ? '12小時軌跡' : '全時段軌跡';
+            }
+
             const minBalance = Math.min(...balances);
             const maxBalance = Math.max(...balances);
             const dynamicRange = maxBalance - minBalance;
@@ -1871,13 +1905,14 @@
         async function loadData() {
             try {
                 const bust = `t=${Date.now()}`;
-                const [thoughts, trades, status, meta, holdingsMeta, ordersMeta] = await Promise.all([
+                const [thoughts, trades, status, meta, holdingsMeta, ordersMeta, assetsMeta] = await Promise.all([
                     fetch(`thinking.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()),
                     fetch(`trades.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()),
                     fetch(`status.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()),
                     fetch(`dashboard_meta.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({})),
                     fetch(`dashboard_holdings.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({ holdings: [] })),
-                    fetch(`dashboard_orders.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({ orderCount: 0 }))
+                    fetch(`dashboard_orders.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({ orderCount: 0 })),
+                    fetch(`dashboard_assets.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({}))
                 ]);
 
                 const displayStrategy = resolveDisplayStrategy(status);
@@ -1915,7 +1950,6 @@
                     const spotPrice = await getSymbolPrice(h.symbol);
                     holdingsWithPrices.push({ ...h, spotPrice });
                 }
-                const cashBalance = Number(status?.balance) || Number(lastTrade?.balance) || initialBalance;
                 const holdingsValue = holdingsWithPrices.reduce((sum, h) => {
                     const qty = Number(h.quantity || 0);
                     const cur = Number(h.spotPrice || 0);
@@ -1929,7 +1963,14 @@
                     if (!qty || !avg || !cur) return sum;
                     return sum + (cur - avg) * qty;
                 }, 0);
-                const currentBalance = cashBalance + holdingsValue;
+
+                // status.balance 在目前策略已是「總資產 equity」，不能再加一次 holdingsValue
+                const assetsEquity = Number(assetsMeta?.totalEquity);
+                const statusEquity = Number(status?.balance);
+                const fallbackEquity = Number(lastTrade?.balance) || initialBalance;
+                const currentBalance = Number.isFinite(assetsEquity) && assetsEquity > 0
+                    ? assetsEquity
+                    : (Number.isFinite(statusEquity) && statusEquity > 0 ? statusEquity : fallbackEquity);
                 const totalPnl = currentBalance - displayCapital;
 
                 updateMetric('currentBalance', `${currentBalance.toFixed(2)} USDT`, currentBalance >= displayCapital ? 'positive' : 'negative');
@@ -1939,7 +1980,16 @@
 
                 document.getElementById('marketTicker').textContent = marketSymbol;
                 document.getElementById('marketPrice').textContent = marketState.price ? `${marketState.price.toFixed(2)} USDT` : '--';
-                document.getElementById('chartPrice').textContent = marketState.price ? `${marketState.price.toFixed(2)}` : '--';
+                const monitoredCoins = Array.isArray(displayStrategy?.coins) ? displayStrategy.coins : [];
+                if (monitoredCoins.length > 0) {
+                    const mSlot = Math.floor(Date.now() / 5000) % monitoredCoins.length;
+                    const mCoin = monitoredCoins[mSlot];
+                    const mPrice = await getSymbolPrice(`${mCoin}USDT`);
+                    document.getElementById('chartPrice').textContent = mPrice ? `${mCoin} ${Number(mPrice).toFixed(2)}` : mCoin;
+                } else {
+                    const coinLabel = String(marketSymbol || '').replace('USDT', '') || '--';
+                    document.getElementById('chartPrice').textContent = marketState.price ? `${coinLabel} ${marketState.price.toFixed(2)}` : coinLabel;
+                }
                 const modelPill = document.getElementById('modelPill');
                 const defaultModelPill = document.getElementById('defaultModelPill');
                 const versionPill = document.getElementById('versionPill');
@@ -1973,9 +2023,14 @@
                     watchedCoin = monitorCoins[wSlot];
                     if (watchAsset) watchAsset.textContent = watchedCoin;
                     if (watchIndex) watchIndex.textContent = `${wSlot + 1} / ${monitorCoins.length}`;
-                    const watchedPrice = await getSymbolPrice(`${watchedCoin}USDT`);
+                    const watchedSymbol = `${watchedCoin}USDT`;
+                    const watchedPrice = await getSymbolPrice(watchedSymbol);
                     watchedPriceText = watchedPrice ? Number(watchedPrice).toFixed(2) : '--';
+                    latestMonitoredCoin = watchedSymbol;
+                    latestCoinSeries = await getCoinSeries(watchedSymbol);
                 } else {
+                    latestMonitoredCoin = null;
+                    latestCoinSeries = [];
                     if (watchAsset) watchAsset.textContent = '--';
                     if (watchIndex) watchIndex.textContent = '--';
                 }
@@ -1998,6 +2053,8 @@
                     if (holdingAvgPrice) holdingAvgPrice.textContent = '--';
                     if (holdingIndex) holdingIndex.textContent = '--';
                 }
+
+                updateChart(trades);
 
                 updateBroadcastFeed({
                     marketSymbol,
