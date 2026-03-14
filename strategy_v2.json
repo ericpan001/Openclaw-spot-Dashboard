@@ -1,6 +1,6 @@
 {
   "version": "2.0-trend-reversal",
-  "coins": ["BTC", "ETH", "SOL", "XRP", "BNB"],
+  "coins": ["BTC", "ETH"],
   "coinUniverse": [],
   "topN": 5,
   "universeTopN": 20,
@@ -50,18 +50,18 @@
     "leverageVolatilityLow": {"max": 0.015, "leverage": 10},
     "leverageVolatilityMid": {"max": 0.03, "leverage": 7},
     "leverageVolatilityHigh": {"max": 999, "leverage": 5},
-    "maxConcurrentPositions": 3,
+    "maxConcurrentPositions": 2,
     "maxTotalRiskPct": 0.06
   },
   "stopLoss": {
-    "fixedLossPct": 0.015,
+    "fixedLossPct": 0.008,
     "useStructureProtection": true
   },
   "takeProfit": {
-    "firstTargetPct": 0.04,
-    "firstTargetClosePct": 0.5,
-    "secondTargetPct": 0.08,
-    "trailToBreakEven": true,
+    "firstTargetPct": 0.012,
+    "firstTargetClosePct": 1.0,
+    "secondTargetPct": 0.0,
+    "trailToBreakEven": false,
     "trendBreakExit": true
   },
   "timeExit": {

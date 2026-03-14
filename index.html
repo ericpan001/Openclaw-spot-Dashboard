@@ -1434,28 +1434,25 @@
             const watchlist = Array.isArray(status?.watchlist)
                 ? status.watchlist.map((coin) => String(coin).toUpperCase().replace('USDT', ''))
                 : [];
-            const v2Coins = Array.isArray(status?.strategy_v2?.coins)
-                ? status.strategy_v2.coins.map((coin) => String(coin).toUpperCase().replace('USDT', ''))
-                    : [];
+            const v2 = status?.strategy_v2 || {};
+            const v2Coins = Array.isArray(v2?.coins)
+                ? v2.coins.map((coin) => String(coin).toUpperCase().replace('USDT', ''))
+                : [];
 
-            if (status?.strategy_v2) {
-                return {
-                    source: 'v2',
-                    coins: watchlist.length ? watchlist : v2Coins,
-                    takeProfitText: '4%减半 / 8%全平',
-                    stopLossText: '1.5%止損',
-                    leverageText: '低10x / 中7x / 高5x',
-                    positionSizeText: '10%-15% / 最多3仓',
-                };
-            }
+            const firstTargetPct = Number(v2?.takeProfit?.firstTargetPct ?? 0.012) * 100;
+            const fixedLossPct = Number(v2?.stopLoss?.fixedLossPct ?? 0.008) * 100;
+            const sizeMin = Number(v2?.position?.sizeMinFraction ?? 0.10) * 100;
+            const sizeMax = Number(v2?.position?.sizeMaxFraction ?? 0.15) * 100;
+            const maxPos = Number(v2?.position?.maxConcurrentPositions ?? 2);
+            const drawdownPct = Number(v2?.riskControl?.maxDrawdownPct ?? 0.03) * 100;
 
             return {
-                source: 'locked-v2',
+                source: status?.strategy_v2 ? 'v2' : 'spot-safe',
                 coins: watchlist.length ? watchlist : v2Coins,
-                takeProfitText: '4%减半 / 8%全平',
-                stopLossText: '1.5%止損',
-                leverageText: '低10x / 中7x / 高5x',
-                positionSizeText: '10%-15% / 最多3仓',
+                takeProfitText: `${firstTargetPct.toFixed(1)}%全平`,
+                stopLossText: `${fixedLossPct.toFixed(1)}%止損 / ${drawdownPct.toFixed(0)}%停手`,
+                leverageText: 'Spot 現貨（無槓桿）',
+                positionSizeText: `${sizeMin.toFixed(0)}%-${sizeMax.toFixed(0)}% / 最多${maxPos}倉`,
             };
         }
 

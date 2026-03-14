@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 BASE_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://api.binance.com"
 USER_AGENT = "openclaw-trend-reversal/2.0"
+DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 STATUS_FILE = BASE_DIR / "status.json"
 TRADES_FILE = BASE_DIR / "trades.json"
 THINKING_FILE = BASE_DIR / "thinking.json"
@@ -155,7 +156,10 @@ class BinanceClient:
     def place_order(self, symbol: str, side: str, order_type: str, 
                     quantity: float = None, price: float = None,
                     reduce_only: bool = False, quote_order_qty: float = None) -> dict:
-        """下单（spot）"""
+        """下单（spot）
+
+        若設定 DRY_RUN=1，則只回傳模擬結果、不會真的送單。
+        """
         timestamp = int(time.time() * 1000)
         params = {
             "symbol": symbol,
@@ -164,6 +168,17 @@ class BinanceClient:
             "timestamp": timestamp,
             "recvWindow": 5000,
         }
+        if DRY_RUN:
+            return {
+                "dryRun": True,
+                "symbol": symbol,
+                "side": side,
+                "type": order_type,
+                "quantity": quantity,
+                "quoteOrderQty": quote_order_qty,
+                "price": price,
+                "timestamp": timestamp,
+            }
         if quantity:
             params["quantity"] = quantity
         if quote_order_qty:
@@ -662,24 +677,64 @@ class TradingBot:
             print(f"交易幣種: {self.trading_coins}")
             self.add_thought(f"📡 V2 交易池： {' / '.join(symbol.replace('USDT', '') for symbol in self.trading_coins) if self.trading_coins else '暫無'}")
     
-    def get_balance(self) -> float:
+    def get_total_equity(self) -> float:
+        """以 USDT 計價的總資產：USDT + (持倉幣種 * 現價)
+
+        這是 Spot 模式下做風控（回撤/停手）的正確基礎。
+        """
         account = self.client.get_account()
-        for a in account.get("balances", []):
-            if a.get("asset") == "USDT":
-                return float(a.get("free", 0))
-        return 0
+        balances = {b.get("asset"): float(b.get("free", 0)) + float(b.get("locked", 0)) for b in account.get("balances", [])}
+        usdt = balances.get("USDT", 0.0)
+
+        def price(symbol: str) -> float:
+            data = self.client._request("/api/v3/ticker/price", {"symbol": symbol}) or {}
+            try:
+                return float(data.get("price", 0))
+            except Exception:
+                return 0.0
+
+        equity = usdt
+        for asset, symbol in [("BTC", "BTCUSDT"), ("ETH", "ETHUSDT")]:
+            qty = balances.get(asset, 0.0)
+            if qty:
+                equity += qty * price(symbol)
+        return equity
+
+    def get_balance(self) -> float:
+        """保留舊介面名稱，但改成回傳 Spot 的總資產（equity）。"""
+        return self.get_total_equity()
+
+    def has_existing_holding(self, symbol: str, min_notional_usdt: float = 5.0) -> bool:
+        """檢查帳戶是否已持有該現貨（含 free+locked）。"""
+        asset = symbol.replace("USDT", "")
+        account = self.client.get_account()
+        qty = 0.0
+        for b in account.get("balances", []):
+            if b.get("asset") == asset:
+                qty = float(b.get("free", 0)) + float(b.get("locked", 0))
+                break
+        if qty <= 0:
+            return False
+        px = self.client._request("/api/v3/ticker/price", {"symbol": symbol}) or {}
+        try:
+            notional = qty * float(px.get("price", 0))
+        except Exception:
+            notional = 0.0
+        return notional >= min_notional_usdt
     
     def is_paused(self) -> bool:
         now = time.time()
         if now < self.pause_until:
             print(f"暂停中，剩余{int(self.pause_until-now)}秒")
             return True
-        
+
+        # 以「總資產」計算回撤（Spot 正確）
+        max_dd = float(os.getenv("MAX_DRAWDOWN_PCT", "0.03"))  # 例如 0.03 = 3%
         if self.highest_balance > 0:
             bal = self.get_balance()
             dd = (self.highest_balance - bal) / self.highest_balance
-            if dd >= 0.40:
-                print("回撤40%，停机")
+            if dd >= max_dd:
+                print(f"回撤{dd*100:.2f}%，觸發停手機制 (max {max_dd*100:.2f}%)")
                 self.pause_until = now + 86400
                 return True
         return False
@@ -696,6 +751,10 @@ class TradingBot:
         if len(self.positions) >= self.config.max_concurrent_positions:
             return False
         if symbol in self.positions:
+            return False
+        # 將既有現貨持倉也視為已占用倉位，避免重複加碼（保守模式）
+        if self.has_existing_holding(symbol):
+            self.add_thought(f"🧾 {symbol} 已有既有持倉，跳過新開倉")
             return False
         
         bal = self.get_balance()
@@ -861,12 +920,8 @@ class TradingBot:
                     self.open_position(symbol, "long")
             
             elif trend == "downtrend":
-                ok, cond = self.strategy.check_short_entry(symbol)
-                if ok:
-                    print(f"{symbol} 空单信号")
-                    events.append(f"{symbol.replace('USDT', '')} 做空 {'/'.join(cond)}")
-                    self.add_thought(f"📉 {symbol} 做空訊號 {' / '.join(cond)}")
-                    self.open_position(symbol, "short")
+                # Spot 保守模式：不做空
+                continue
         return events, top_signal
     
     def update_strategy_display(self):
@@ -893,23 +948,25 @@ class TradingBot:
         print("=" * 50)
         
         self.highest_balance = self.get_balance()
-        
+
+        tick_seconds = int(os.getenv("TICK_SECONDS", "300"))  # 保守預設：5 分鐘一次
+
         while True:
             try:
                 if self.is_paused():
                     self.update_status(events=["paused"])
-                    time.sleep(60)
+                    time.sleep(tick_seconds)
                     continue
 
                 self.tick()
-                time.sleep(60)
+                time.sleep(tick_seconds)
                 
             except KeyboardInterrupt:
                 print("\n停止")
                 break
             except Exception as e:
                 print(f"错误: {e}")
-                time.sleep(60)
+                time.sleep(tick_seconds)
 
 
 def main():
