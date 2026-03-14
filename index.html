@@ -1072,12 +1072,11 @@
                         <strong id="holdingAvgPrice">--</strong>
                         <small id="holdingIndex">--</small>
                     </div>
-                    <div class="mini-stack">
-                        <div class="mini-card">
-                            <span>目前市價</span>
-                            <strong id="holdingCurrentPriceExtra">--</strong>
-                            <small id="holdingIndexExtra">--</small>
-                        </div>
+                    <div></div>
+                    <div class="mini-card">
+                        <span>目前市價</span>
+                        <strong id="holdingCurrentPriceExtra">--</strong>
+                        <small id="holdingIndexExtra">--</small>
                     </div>
                 </div>
             </div>
@@ -1113,20 +1112,20 @@
 
             <div class="shell-card metric-card">
                 <div class="metric-top">
-                    <span>執行時長</span>
-                    <div class="metric-orb neutral"></div>
-                </div>
-                <div class="metric-value neutral" id="runTime">--</div>
-                <div class="metric-note">本轮自动化執行時長</div>
-            </div>
-
-            <div class="shell-card metric-card">
-                <div class="metric-top">
                     <span>交易次數</span>
                     <div class="metric-orb neutral"></div>
                 </div>
                 <div class="metric-value neutral" id="totalTrades">--</div>
                 <div class="metric-note">累計成交紀錄</div>
+            </div>
+
+            <div class="shell-card metric-card" style="visibility:hidden;">
+                <div class="metric-top">
+                    <span>執行時長</span>
+                    <div class="metric-orb neutral"></div>
+                </div>
+                <div class="metric-value neutral" id="runTime">--</div>
+                <div class="metric-note">本輪自動化執行時長</div>
             </div>
         </section>
 
@@ -1144,7 +1143,7 @@
                                 <div class="meta-pill" id="versionPill">OpenClaw：讀取中…</div>
                                 <div class="meta-pill" id="metaUpdatedPill">更新時間：讀取中…</div>
                                 <div class="meta-pill">交易所：Binance 現貨</div>
-                                <div class="meta-pill" id="chartCapital">本金：110 USDT 挑戰</div>
+                                <div class="meta-pill" id="chartCapital">本金：99.979 USDT</div>
                             </div>
                         </div>
                         <div class="head-chip">
@@ -1280,7 +1279,7 @@
         let latestMarketState = null;
         const startTime = new Date('2026-03-10T12:00:00+09:00');
         const initialBalance = 10;
-        const displayCapital = 110;
+        const displayCapital = 99.979;
         const majorCoins = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'ADA', 'LINK', 'AVAX', 'LTC'];
 
         function formatSigned(value, digits = 2) {
@@ -1778,12 +1777,13 @@
         async function loadData() {
             try {
                 const bust = `t=${Date.now()}`;
-                const [thoughts, trades, status, meta, holdingsMeta] = await Promise.all([
+                const [thoughts, trades, status, meta, holdingsMeta, ordersMeta] = await Promise.all([
                     fetch(`thinking.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()),
                     fetch(`trades.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()),
                     fetch(`status.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()),
                     fetch(`dashboard_meta.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({})),
-                    fetch(`dashboard_holdings.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({ holdings: [] }))
+                    fetch(`dashboard_holdings.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({ holdings: [] })),
+                    fetch(`dashboard_orders.json?${bust}`, { cache: 'no-store' }).then((res) => res.json()).catch(() => ({ orderCount: 0 }))
                 ]);
 
                 const displayStrategy = resolveDisplayStrategy(status);
@@ -1815,13 +1815,33 @@
                 updateStatus(status);
 
                 const lastTrade = trades[trades.length - 1];
-                const currentBalance = Number(status?.equity) || Number(status?.balance) || Number(lastTrade?.balance) || initialBalance;
+                const holdings = Array.isArray(holdingsMeta?.holdings) ? holdingsMeta.holdings : [];
+                const holdingsWithPrices = [];
+                for (const h of holdings) {
+                    const spotPrice = await getSymbolPrice(h.symbol);
+                    holdingsWithPrices.push({ ...h, spotPrice });
+                }
+                const cashBalance = Number(status?.balance) || Number(lastTrade?.balance) || initialBalance;
+                const holdingsValue = holdingsWithPrices.reduce((sum, h) => {
+                    const qty = Number(h.quantity || 0);
+                    const cur = Number(h.spotPrice || 0);
+                    if (!qty || !cur) return sum;
+                    return sum + cur * qty;
+                }, 0);
+                const unrealizedSpotPnl = holdingsWithPrices.reduce((sum, h) => {
+                    const qty = Number(h.quantity || 0);
+                    const avg = Number(h.avgBuyPrice || 0);
+                    const cur = Number(h.spotPrice || 0);
+                    if (!qty || !avg || !cur) return sum;
+                    return sum + (cur - avg) * qty;
+                }, 0);
+                const currentBalance = cashBalance + holdingsValue;
                 const totalPnl = currentBalance - displayCapital;
 
                 updateMetric('currentBalance', `${currentBalance.toFixed(2)} USDT`, currentBalance >= displayCapital ? 'positive' : 'negative');
-                updateMetric('positionPnl', `${formatSigned(openPosition ? marketState.pnl : 0)} USDT`, openPosition ? (marketState.pnl >= 0 ? 'positive' : 'negative') : 'neutral');
+                updateMetric('positionPnl', `${formatSigned(unrealizedSpotPnl)} USDT`, unrealizedSpotPnl > 0 ? 'positive' : unrealizedSpotPnl < 0 ? 'negative' : 'neutral');
                 updateMetric('totalPnl', `${formatSigned(totalPnl)} USDT`, totalPnl >= 0 ? 'positive' : 'negative');
-                updateMetric('totalTrades', String(trades.length).padStart(2, '0'), 'neutral');
+                updateMetric('totalTrades', String(Number(ordersMeta?.orderCount || 0)).padStart(2, '0'), 'neutral');
 
                 document.getElementById('marketTicker').textContent = marketSymbol;
                 document.getElementById('marketPrice').textContent = marketState.price ? `${marketState.price.toFixed(2)} USDT` : '--';
@@ -1843,7 +1863,6 @@
                     metaUpdatedPill.textContent = `更新時間：${formatMetaUpdated(meta?.updatedAt)}`;
                 }
 
-                const holdings = Array.isArray(holdingsMeta?.holdings) ? holdingsMeta.holdings : [];
                 const holdingAsset = document.getElementById('holdingAsset');
                 const holdingQty = document.getElementById('holdingQty');
                 const holdingAvgPrice = document.getElementById('holdingAvgPrice');
@@ -1852,17 +1871,17 @@
                 const holdingIndexExtra = document.getElementById('holdingIndexExtra');
                 if (holdings.length > 0) {
                     const slot = Math.floor(Date.now() / 5000) % holdings.length;
-                    const h = holdings[slot];
+                    const h = holdingsWithPrices[slot];
                     const qtyText = `數量：${Number(h.quantity).toFixed(8).replace(/0+$/,'').replace(/\.$/,'')}`;
                     const idxText = `${slot + 1} / ${holdings.length}`;
-                    const holdingSpotPrice = await getSymbolPrice(h.symbol);
-                    const currentPriceText = holdingSpotPrice ? Number(holdingSpotPrice).toFixed(2) : '--';
+                    const currentPriceText = h.spotPrice ? Number(h.spotPrice).toFixed(2) : '--';
                     if (holdingAsset) holdingAsset.textContent = h.asset;
                     if (holdingQty) holdingQty.textContent = qtyText;
                     if (holdingAvgPrice) holdingAvgPrice.textContent = h.avgBuyPrice ? Number(h.avgBuyPrice).toFixed(2) : '--';
                     if (holdingIndex) holdingIndex.textContent = idxText;
                     if (holdingCurrentPriceExtra) holdingCurrentPriceExtra.textContent = currentPriceText;
                     if (holdingIndexExtra) holdingIndexExtra.textContent = `${h.asset} 目前市價`;
+                    updateMetric('positionPnl', `${formatSigned(unrealizedSpotPnl)} USDT`, unrealizedSpotPnl > 0 ? 'positive' : unrealizedSpotPnl < 0 ? 'negative' : 'neutral');
                 } else {
                     if (holdingAsset) holdingAsset.textContent = '--';
                     if (holdingQty) holdingQty.textContent = '目前無持倉';
