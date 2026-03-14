@@ -1106,9 +1106,13 @@
                         <strong id="holdingAvgPrice">--</strong>
                         <small id="holdingIndex">--</small>
                     </div>
-                    <div></div>
                     <div class="mini-card">
-                        <span>目前市價</span>
+                        <span>監控池幣種</span>
+                        <strong id="watchAsset">--</strong>
+                        <small id="watchIndex">--</small>
+                    </div>
+                    <div class="mini-card">
+                        <span>監控幣值</span>
                         <strong id="holdingCurrentPriceExtra">--</strong>
                         <small id="holdingIndexExtra">--</small>
                     </div>
@@ -1959,26 +1963,40 @@
                 const holdingIndex = document.getElementById('holdingIndex');
                 const holdingCurrentPriceExtra = document.getElementById('holdingCurrentPriceExtra');
                 const holdingIndexExtra = document.getElementById('holdingIndexExtra');
+                const watchAsset = document.getElementById('watchAsset');
+                const watchIndex = document.getElementById('watchIndex');
+                const monitorCoins = Array.isArray(displayStrategy?.coins) ? displayStrategy.coins : [];
+                let watchedCoin = null;
+                let watchedPriceText = '--';
+                if (monitorCoins.length > 0) {
+                    const wSlot = Math.floor(Date.now() / 5000) % monitorCoins.length;
+                    watchedCoin = monitorCoins[wSlot];
+                    if (watchAsset) watchAsset.textContent = watchedCoin;
+                    if (watchIndex) watchIndex.textContent = `${wSlot + 1} / ${monitorCoins.length}`;
+                    const watchedPrice = await getSymbolPrice(`${watchedCoin}USDT`);
+                    watchedPriceText = watchedPrice ? Number(watchedPrice).toFixed(2) : '--';
+                } else {
+                    if (watchAsset) watchAsset.textContent = '--';
+                    if (watchIndex) watchIndex.textContent = '--';
+                }
+                if (holdingCurrentPriceExtra) holdingCurrentPriceExtra.textContent = watchedPriceText;
+                if (holdingIndexExtra) holdingIndexExtra.textContent = watchedCoin ? `${watchedCoin} 目前幣值` : '--';
+
                 if (holdings.length > 0) {
                     const slot = Math.floor(Date.now() / 5000) % holdings.length;
                     const h = holdingsWithPrices[slot];
                     const qtyText = `數量：${Number(h.quantity).toFixed(8).replace(/0+$/,'').replace(/\.$/,'')}`;
                     const idxText = `${slot + 1} / ${holdings.length}`;
-                    const currentPriceText = h.spotPrice ? Number(h.spotPrice).toFixed(2) : '--';
                     if (holdingAsset) holdingAsset.textContent = h.asset;
                     if (holdingQty) holdingQty.textContent = qtyText;
                     if (holdingAvgPrice) holdingAvgPrice.textContent = h.avgBuyPrice ? Number(h.avgBuyPrice).toFixed(2) : '--';
                     if (holdingIndex) holdingIndex.textContent = idxText;
-                    if (holdingCurrentPriceExtra) holdingCurrentPriceExtra.textContent = currentPriceText;
-                    if (holdingIndexExtra) holdingIndexExtra.textContent = `${h.asset} 目前市價`;
                     updateMetric('positionPnl', `${formatSigned(unrealizedSpotPnl)} USDT`, unrealizedSpotPnl > 0 ? 'positive' : unrealizedSpotPnl < 0 ? 'negative' : 'neutral');
                 } else {
                     if (holdingAsset) holdingAsset.textContent = '--';
                     if (holdingQty) holdingQty.textContent = '目前無持倉';
                     if (holdingAvgPrice) holdingAvgPrice.textContent = '--';
                     if (holdingIndex) holdingIndex.textContent = '--';
-                    if (holdingCurrentPriceExtra) holdingCurrentPriceExtra.textContent = '--';
-                    if (holdingIndexExtra) holdingIndexExtra.textContent = '--';
                 }
 
                 updateBroadcastFeed({

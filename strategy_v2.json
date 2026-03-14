@@ -1,6 +1,6 @@
 {
   "version": "2.0-trend-reversal",
-  "coins": ["BTC", "ETH"],
+  "coins": ["BTC", "ETH", "SOL"],
   "coinUniverse": [],
   "topN": 5,
   "universeTopN": 20,
@@ -50,7 +50,7 @@
     "leverageVolatilityLow": {"max": 0.015, "leverage": 10},
     "leverageVolatilityMid": {"max": 0.03, "leverage": 7},
     "leverageVolatilityHigh": {"max": 999, "leverage": 5},
-    "maxConcurrentPositions": 2,
+    "maxConcurrentPositions": 3,
     "maxTotalRiskPct": 0.06
   },
   "stopLoss": {
