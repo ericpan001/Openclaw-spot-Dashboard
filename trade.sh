@@ -1,15 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-cd /Users/sonic/.openclaw/workspace/trading-bot
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 if [ -f .env ]; then
   set -a
   . ./.env
   set +a
 fi
 
-if pgrep -f "/Users/sonic/.openclaw/workspace/trading-bot/trade_v2.py run" >/dev/null 2>&1; then
+if pgrep -f "$SCRIPT_DIR/trade_v2.py run" >/dev/null 2>&1; then
   exit 0
 fi
 
-exec python3 /Users/sonic/.openclaw/workspace/trading-bot/trade_v2.py run "$@"
+exec python3 "$SCRIPT_DIR/trade_v2.py" run "$@"

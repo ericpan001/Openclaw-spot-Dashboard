@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-OpenClaw 趋势回调交易策略 v2.0
-永续合约趋势回调交易策略
+OpenClaw 趨勢回調交易策略 v2.0
+永續合約趨勢回調交易策略
 
 规则文档：24条策略规则
 """
@@ -24,8 +24,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-BASE_DIR = Path("/Users/sonic/.openclaw/workspace/trading-bot")
-BASE_URL = "https://fapi.binance.com"
+BASE_DIR = Path(__file__).resolve().parent
+BASE_URL = "https://api.binance.com"
 USER_AGENT = "openclaw-trend-reversal/2.0"
 STATUS_FILE = BASE_DIR / "status.json"
 TRADES_FILE = BASE_DIR / "trades.json"
@@ -127,13 +127,13 @@ class BinanceClient:
             return {}
     
     def get_ticker_24h(self) -> list:
-        """获取24小时ticker数据"""
-        return self._request("/fapi/v1/ticker/24hr") or []
+        """获取24小时ticker数据（spot）"""
+        return self._request("/api/v3/ticker/24hr") or []
     
     def get_klines(self, symbol: str, interval: str = "1m", limit: int = 60) -> list:
-        """获取K线数据"""
+        """获取K线数据（spot）"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        data = self._request("/fapi/v1/klines", params) or []
+        data = self._request("/api/v3/klines", params) or []
         return [
             {
                 "time": int(k[0]),
@@ -147,15 +147,15 @@ class BinanceClient:
         ]
     
     def get_account(self) -> dict:
-        """获取账户信息"""
+        """获取账户信息（spot）"""
         timestamp = int(time.time() * 1000)
         params = {"timestamp": timestamp, "recvWindow": 5000}
-        return self._request("/fapi/v2/account", params, signed=True) or {}
+        return self._request("/api/v3/account", params, signed=True) or {}
     
     def place_order(self, symbol: str, side: str, order_type: str, 
                     quantity: float = None, price: float = None,
-                    reduce_only: bool = False) -> dict:
-        """下单"""
+                    reduce_only: bool = False, quote_order_qty: float = None) -> dict:
+        """下单（spot）"""
         timestamp = int(time.time() * 1000)
         params = {
             "symbol": symbol,
@@ -165,16 +165,14 @@ class BinanceClient:
             "recvWindow": 5000,
         }
         if quantity:
-            params["quantity"] = round(quantity, 3)
+            params["quantity"] = quantity
+        if quote_order_qty:
+            params["quoteOrderQty"] = quote_order_qty
         if price:
-            params["price"] = round(price, 2)
-        if reduce_only:
-            params["reduceOnly"] = "true"
-        
-        query = urlencode(params)
-        params["signature"] = self._sign(query)
-        
-        return self._request("/fapi/v1/order", params, signed=True) or {}
+            params["price"] = price
+            if order_type == "LIMIT":
+                params["timeInForce"] = "GTC"
+        return self._request("/api/v3/order", params, signed=True) or {}
 
 
 class TechnicalIndicators:
@@ -246,13 +244,13 @@ class TechnicalIndicators:
 
 
 class CoinScorer:
-    """币种评分系统"""
+    """幣種評分系統"""
     
     def __init__(self, client: BinanceClient):
         self.client = client
     
     def get_top_coins(self, top_n: int = 20) -> list:
-        """获取现货成交额前N的币种"""
+        """取得現貨成交額前 N 的幣種"""
         import urllib.request
         import json
         
@@ -266,25 +264,25 @@ class CoinScorer:
             with urllib.request.urlopen(req, timeout=10) as response:
                 tickers = json.loads(response.read().decode())
         except Exception as e:
-            print(f"获取现货数据失败: {e}")
+            print(f"取得現貨資料失敗: {e}")
             tickers = self.client.get_ticker_24h()
         
-        # 过滤USDT交易对，排除稳定币
+        # 過濾 USDT 交易對，排除穩定幣
         usdt_pairs = [t for t in tickers if t.get("symbol", "").endswith("USDT") 
                       and t.get("symbol", "") not in stable_coins]
-        # 按现货成交额排序
+        # 按現貨成交額排序
         sorted_tickers = sorted(usdt_pairs, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
         return [t["symbol"] for t in sorted_tickers[:top_n]]
     
     def get_top_scored(self, universe: list, top_n: int = 10) -> list:
-        """获取评分最高的币种（使用百分位排名）"""
+        """取得評分最高的幣種（使用百分位排名）"""
         btc_klines = self.client.get_klines("BTCUSDT", "1m", 60)
         eth_klines = self.client.get_klines("ETHUSDT", "1m", 60)
         
         btc_chg = (btc_klines[-1]["close"] - btc_klines[-30]["close"]) / btc_klines[-30]["close"] * 100 if len(btc_klines) >= 30 else 0
         eth_chg = (eth_klines[-1]["close"] - eth_klines[-30]["close"]) / eth_klines[-30]["close"] * 100 if len(eth_klines) >= 30 else 0
         
-        # 先获取所有币种的原始指标值
+        # 先取得所有幣種的原始指標值
         coin_metrics = []
         for symbol in universe:
             metrics = self._calc_metrics(symbol, btc_chg, eth_chg)
@@ -311,7 +309,7 @@ class CoinScorer:
                 rank = 50
             return rank
         
-        # 计算每个币种的综合评分
+        # 計算每個幣種的綜合評分
         scored = []
         for symbol, metrics in coin_metrics:
             p_score = percentile_rank(metrics['price_change'], price_changes)
@@ -319,7 +317,7 @@ class CoinScorer:
             vola_score = percentile_rank(metrics['volatility'], volatilities)
             r_score = percentile_rank(metrics['rel_change'], rel_changes)
             
-            # 权重: 涨跌幅30%, 成交量增长25%, 波动率25%, 相对BTC/ETH 20%
+            # 权重: 涨跌幅30%, 成交量增长25%, 波動率25%, 相对BTC/ETH 20%
             total = p_score * 0.30 + v_score * 0.25 + vola_score * 0.25 + r_score * 0.20
             scored.append((symbol, total))
         
@@ -328,7 +326,7 @@ class CoinScorer:
         return [s[0] for s in scored[:top_n]]
     
     def _calc_metrics(self, symbol: str, btc_change: float, eth_change: float) -> dict:
-        """计算单个币种的原始指标"""
+        """計算單一幣種的原始指標"""
         klines_30m = self.client.get_klines(symbol, "1m", 60)
         if not klines_30m or len(klines_30m) < 30:
             return None
@@ -346,7 +344,7 @@ class CoinScorer:
             vol_p = sum(volumes[-60:-30]) / 30
             vol_growth = (vol_c - vol_p) / vol_p * 100 if vol_p > 0 else 0
         
-        # 3. 波动率
+        # 3. 波動率
         volatility = TechnicalIndicators.volatility(klines_30m, 30)
         
         # 4. 相对BTC/ETH涨跌幅差值
@@ -361,7 +359,7 @@ class CoinScorer:
 
 
 class TrendStrategy:
-    """趋势回调策略"""
+    """趨勢回調策略"""
     
     def __init__(self, client: BinanceClient, config: Config):
         self.client = client
@@ -379,23 +377,23 @@ class TrendStrategy:
     
     def check_trend_filter(self, symbol: str) -> tuple:
         klines = self.client.get_klines(symbol, "1m", 60)
-        if len(klines) < 35:  # 需要至少35根K线来计算当前MA30和5根K线前的MA30
+        if len(klines) < 35:  # 至少需要 35 根 K 線來計算目前 MA30 與 5 根 K 線前的 MA30
             return False, "K线不足"
         
         closes = [k["close"] for k in klines]
         
-        # MA30斜率 = (当前MA30 - 5根K线前的MA30) / 5根K线前的MA30 × 100%
+        # MA30 斜率 = (当前MA30 - 5根K线前的MA30) / 5根K线前的MA30 × 100%
         ma30_c = TechnicalIndicators.sma(closes, 30)
         # 5根K线前的MA30：用closes[:-5]计算
         ma30_5_ago = TechnicalIndicators.sma(closes[:-5], 30) if len(closes) > 5 else ma30_c
         ma30_slope = abs(TechnicalIndicators.ma_slope(ma30_c, ma30_5_ago))
         
         if ma30_slope < 0.15:
-            return False, f"MA30斜率{ma30_slope:.3f}%<0.15%"
+            return False, f"MA30 斜率{ma30_slope:.3f}%<0.15%"
         
         vol_15m = TechnicalIndicators.volatility(klines, 15)
         if vol_15m < 1.0:
-            return False, f"波动率{vol_15m:.2f}%<1%"
+            return False, f"波動率{vol_15m:.2f}%<1%"
         
         crosses = TechnicalIndicators.count_ma_crosses(klines, 5, 10)
         if crosses >= 3:
@@ -439,7 +437,7 @@ class TrendStrategy:
         
         cond = []
         
-        # 条件1: 价格回调至MA附近
+        # 條件 1：價格回調至 MA 附近
         for ma in [ma5, ma10, ma30]:
             d = abs(price - ma) / ma * 100
             if 0.6 <= d <= 1.2:
@@ -534,7 +532,7 @@ class TrendStrategy:
 
 
 class TradingBot:
-    """交易机器人"""
+    """交易機器人"""
     
     def __init__(self, api_key: str = "", secret_key: str = ""):
         self.client = BinanceClient(api_key, secret_key)
@@ -638,12 +636,12 @@ class TradingBot:
             "top_signal": top_signal or {"symbol": None, "direction": None, "score": None},
             "events": (events or self.last_events or ["v2 running"])[-8:],
             "strategy_v2": {
-                "version": "趋势回调v2.0",
-                "takeProfit": f"第一目标+{take_profit.get('firstTargetPct', 4) * 100:.1f}%卖50%，第二目标+{take_profit.get('secondTargetPct', 8) * 100:.1f}%全卖",
-                "stopLoss": f"固定{stop_loss.get('fixedLossPct', 1.5) * 100:.1f}% + 结构保护",
-                "leverage": f"低波动{position.get('leverageVolatilityLow', {}).get('leverage', 10)}x / 中波动{position.get('leverageVolatilityMid', {}).get('leverage', 7)}x / 高波动{position.get('leverageVolatilityHigh', {}).get('leverage', 5)}x",
-                "positionSize": f"单笔{position.get('sizeMinFraction', 0.10) * 100:.0f}%-{position.get('sizeMaxFraction', 0.15) * 100:.0f}%仓位，最多{position.get('maxConcurrentPositions', 3)}持仓",
-                "entryLogic": "MA趋势判断 + 4选3回调开仓",
+                "version": "趨勢回調 v2.0",
+                "takeProfit": f"第一目標 +{take_profit.get('firstTargetPct', 4) * 100:.1f}%賣出 50%，第二目標 +{take_profit.get('secondTargetPct', 8) * 100:.1f}% 全賣",
+                "stopLoss": f"固定{stop_loss.get('fixedLossPct', 1.5) * 100:.1f}% + 結構保護",
+                "leverage": f"低波動{position.get('leverageVolatilityLow', {}).get('leverage', 10)}x / 中波動{position.get('leverageVolatilityMid', {}).get('leverage', 7)}x / 高波動{position.get('leverageVolatilityHigh', {}).get('leverage', 5)}x",
+                "positionSize": f"單筆{position.get('sizeMinFraction', 0.10) * 100:.0f}%-{position.get('sizeMaxFraction', 0.15) * 100:.0f}%倉位，最多{position.get('maxConcurrentPositions', 3)}持倉",
+                "entryLogic": "MA 趨勢判斷 + 4 選 3 回調開倉",
                 "coins": [symbol.replace("USDT", "") for symbol in self.trading_coins],
                 "topN": strategy_v2.get("topN", self.config.top_n),
             }
@@ -653,7 +651,7 @@ class TradingBot:
     def update_universe(self):
         now = time.time()
         if not self.universe or now - self.last_universe_update > 600:
-            print("更新币种列表...")
+            print("更新幣種列表...")
             if self.config.fixed_coins:
                 self.universe = self.config.fixed_coins[:]
                 self.trading_coins = self.config.fixed_coins[:self.config.top_n]
@@ -661,14 +659,14 @@ class TradingBot:
                 self.universe = self.scorer.get_top_coins(30)
                 self.trading_coins = self.scorer.get_top_scored(self.universe, self.config.top_n)
             self.last_universe_update = now
-            print(f"交易币种: {self.trading_coins}")
-            self.add_thought(f"📡 V2交易池: {' / '.join(symbol.replace('USDT', '') for symbol in self.trading_coins) if self.trading_coins else '暂无'}")
+            print(f"交易幣種: {self.trading_coins}")
+            self.add_thought(f"📡 V2 交易池： {' / '.join(symbol.replace('USDT', '') for symbol in self.trading_coins) if self.trading_coins else '暫無'}")
     
     def get_balance(self) -> float:
         account = self.client.get_account()
-        for a in account.get("assets", []):
+        for a in account.get("balances", []):
             if a.get("asset") == "USDT":
-                return float(a.get("availableBalance", 0))
+                return float(a.get("free", 0))
         return 0
     
     def is_paused(self) -> bool:
@@ -739,16 +737,16 @@ class TradingBot:
                     "amount": round(float(size), 4),
                     "price": round(float(order_price), 6),
                     "pnl": 0.0,
-                    "reason": "趋势回调v2开仓",
+                    "reason": "趋势回調v2開倉",
                     "balance": round(float(self.get_balance()), 4),
                     "leverage": lev,
                     "direction": direction,
                     "tradeAction": "OPEN",
                 })
-                self.add_thought(f"🎯 {symbol} {'做多' if direction == 'long' else '做空'} 开仓 {order_price:.4f}")
+                self.add_thought(f"🎯 {symbol} {'做多' if direction == 'long' else '做空'} 開倉 {order_price:.4f}")
                 return True
         except Exception as e:
-            print(f"开仓失败: {e}")
+            print(f"開倉失败: {e}")
         return False
 
     def close_position(self, symbol: str, reason: str):
@@ -769,24 +767,24 @@ class TradingBot:
                 "amount": round(float(pos["qty"]), 4),
                 "price": round(float(close_price), 6),
                 "pnl": round(float(realized), 4),
-                "reason": f"趋势回调v2平仓: {reason}",
+                "reason": f"趋势回調v2平倉: {reason}",
                 "balance": round(float(self.get_balance()), 4),
                 "leverage": pos["leverage"],
                 "direction": pos["direction"],
                 "tradeAction": "CLOSE",
             })
             del self.positions[symbol]
-            print(f"{symbol} 平仓: {reason}")
-            self.add_thought(f"🧾 {symbol} 平仓 {reason}")
+            print(f"{symbol} 平倉: {reason}")
+            self.add_thought(f"🧾 {symbol} 平倉 {reason}")
             if reason in ["stop_loss", "time_exit"]:
                 self.consecutive_losses += 1
         except Exception as e:
-            print(f"平仓失败: {e}")
+            print(f"平倉失败: {e}")
     
     def check_positions(self):
         now = time.time()
         for symbol, pos in list(self.positions.items()):
-            # 趋势破坏
+            # 趨勢破壞
             if self.strategy.check_trend_break(symbol, pos["direction"]):
                 self.close_position(symbol, "trend_break")
                 continue
@@ -797,7 +795,7 @@ class TradingBot:
                 self.close_position(symbol, "time_exit")
                 continue
             
-            # 价格检查
+            # 價格檢查
             klines = self.client.get_klines(symbol, "1m", 1)
             if not klines:
                 continue
@@ -807,7 +805,7 @@ class TradingBot:
             
             pnl = (price - entry) / entry if d == "long" else (entry - price) / entry
             
-            # 止损
+            # 止損
             sl = self.strategy.calc_sl(d, entry)
             if (d == "long" and price <= sl) or (d == "short" and price >= sl):
                 self.close_position(symbol, "stop_loss")
@@ -819,13 +817,13 @@ class TradingBot:
                 self.close_position(symbol, "tp2")
             elif pnl >= self.config.first_target_pct and "tp1_triggered" not in pos:
                 pos["tp1_triggered"] = True
-                # 部分平仓
+                # 部分平倉
                 qty = pos["qty"] * 0.5
                 side = "SELL" if d == "long" else "BUY"
                 try:
                     self.client.place_order(symbol, side, "MARKET", qty, reduce_only=True)
                     pos["qty"] *= 0.5
-                    pos["entry"] = price  # 止损移至成本
+                    pos["entry"] = price  # 止損移至成本
                 except:
                     pass
     
@@ -859,7 +857,7 @@ class TradingBot:
                 if ok:
                     print(f"{symbol} 多单信号")
                     events.append(f"{symbol.replace('USDT', '')} 做多 {'/'.join(cond)}")
-                    self.add_thought(f"📈 {symbol} 做多信号 {' / '.join(cond)}")
+                    self.add_thought(f"📈 {symbol} 做多訊號 {' / '.join(cond)}")
                     self.open_position(symbol, "long")
             
             elif trend == "downtrend":
@@ -867,7 +865,7 @@ class TradingBot:
                 if ok:
                     print(f"{symbol} 空单信号")
                     events.append(f"{symbol.replace('USDT', '')} 做空 {'/'.join(cond)}")
-                    self.add_thought(f"📉 {symbol} 做空信号 {' / '.join(cond)}")
+                    self.add_thought(f"📉 {symbol} 做空訊號 {' / '.join(cond)}")
                     self.open_position(symbol, "short")
         return events, top_signal
     
@@ -875,8 +873,8 @@ class TradingBot:
         self.update_status()
 
     def tick(self) -> None:
-        events = [f"V2扫描 {datetime.now().strftime('%H:%M:%S')}"]
-        self.add_thought(f"🔄 V2扫描 {datetime.now().strftime('%H:%M:%S')}")
+        events = [f"V2 掃描 {datetime.now().strftime('%H:%M:%S')}"]
+        self.add_thought(f"🔄 V2 掃描 {datetime.now().strftime('%H:%M:%S')}")
         self.check_positions()
         scan_events, top_signal = self.scan_and_trade()
         events.extend(scan_events)
@@ -891,7 +889,7 @@ class TradingBot:
     
     def run(self):
         print("=" * 50)
-        print("趋势回调策略 v2.0 启动")
+        print("趨勢回調策略 v2.0 启动")
         print("=" * 50)
         
         self.highest_balance = self.get_balance()
@@ -932,7 +930,7 @@ def main():
         bot.tick()
     elif args.cmd == "status":
         print(f"余额: {bot.get_balance()}")
-        print(f"持仓: {bot.positions}")
+        print(f"持倉: {bot.positions}")
 
 
 if __name__ == "__main__":

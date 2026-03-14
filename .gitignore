@@ -2,3 +2,9 @@
 __pycache__/
 *.log
 .DS_Store
+status.json
+thinking.json
+trades.json
+dashboard_meta.json
+dashboard_holdings.json
+.cf-pages-release/
