@@ -8,3 +8,8 @@ trades.json
 dashboard_meta.json
 dashboard_holdings.json
 .cf-pages-release/
+*.pid
+*.bak
+dashboard_assets.json
+dashboard_orders.json
+live_trading_window.json
