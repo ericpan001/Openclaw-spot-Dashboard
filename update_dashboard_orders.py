@@ -1,54 +1,49 @@
 #!/usr/bin/env python3
-import os, time, json, hmac, hashlib, urllib.request, urllib.parse
+import os, time, json
 from pathlib import Path
+from datetime import datetime, timedelta
 
 BASE_DIR = Path(__file__).resolve().parent
-ENV_FILE = BASE_DIR / '.env'
 OUT = BASE_DIR / 'dashboard_orders.json'
 
-for line in ENV_FILE.read_text().splitlines():
-    if '=' in line:
-        k, v = line.split('=', 1)
-        os.environ[k] = v
-
-API = os.environ['BINANCE_API_KEY']
-SEC = os.environ['BINANCE_SECRET_KEY']
-
-
-def signed_get(path, params=None):
-    params = params or {}
-    params['timestamp'] = str(int(time.time() * 1000))
-    params['recvWindow'] = '5000'
-    q = urllib.parse.urlencode(params)
-    sig = hmac.new(SEC.encode(), q.encode(), hashlib.sha256).hexdigest()
-    url = 'https://api.binance.com' + path + '?' + q + '&signature=' + sig
-    req = urllib.request.Request(url, headers={'X-MBX-APIKEY': API, 'User-Agent': 'dashboard-orders'})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode())
-
-
 def main():
-    symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT']
-    rows = []
-    order_ids = set()
-    by_symbol = {}
-    for symbol in symbols:
-        try:
-            trades = signed_get('/api/v3/myTrades', {'symbol': symbol, 'limit': '100'})
-        except Exception:
-            trades = []
-        rows.extend(trades)
-        ids = sorted({t.get('orderId') for t in trades if t.get('orderId') is not None})
-        by_symbol[symbol] = len(ids)
-        order_ids.update(ids)
-    payload = {
-        'rawTradeRows': len(rows),
-        'orderCount': len(order_ids),
-        'bySymbol': by_symbol,
-        'updatedAt': int(time.time() * 1000)
-    }
-    OUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
+    try:
+        trades_file = BASE_DIR / 'trades.json'
+        if not trades_file.exists():
+            OUT.write_text(json.dumps({"orderCount": 0, "updatedAt": int(time.time()*1000)}))
+            return
 
+        trades_data = json.loads(trades_file.read_text())
+        
+        # 定義 24 小時前的時間點
+        now = datetime.now()
+        twenty_four_hours_ago = now - timedelta(hours=24)
+        
+        recent_count = 0
+        for t in trades_data:
+            time_str = t.get('time')
+            if not time_str:
+                continue
+            
+            try:
+                # 轉換交易時間字串為 datetime 物件
+                trade_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                # 只統計 24 小時內的開倉動作 (或是成交動作)
+                if trade_time > twenty_four_hours_ago:
+                    if t.get('tradeAction') == 'OPEN' or t.get('tradeAction') == 'CLOSE':
+                        recent_count += 1
+            except Exception:
+                continue
 
-if __name__ == '__main__':
+        data = {
+            "orderCount": recent_count,
+            "updatedAt": int(time.time() * 1000)
+        }
+        
+        OUT.write_text(json.dumps(data, indent=2))
+        print(f"Updated 24h trade count: {recent_count}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
     main()

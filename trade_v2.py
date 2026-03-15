@@ -61,7 +61,6 @@ def write_json(path: Path, payload: Any) -> None:
 
 load_env_file(BASE_DIR / ".env")
 
-
 def ensure_credentials() -> None:
     if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_SECRET_KEY"):
         return
@@ -752,10 +751,10 @@ class TradingBot:
             return False
         if symbol in self.positions:
             return False
-        # 將既有現貨持倉也視為已占用倉位，避免重複加碼（保守模式）
-        if self.has_existing_holding(symbol):
-            self.add_thought(f"🧾 {symbol} 已有既有持倉，跳過新開倉")
-            return False
+        # [已放寬] 允許在已有現貨持倉的情況下繼續根據策略開新倉
+        # if self.has_existing_holding(symbol):
+        #     self.add_thought(f"🧾 {symbol} 已有既有持倉，跳過新開倉")
+        #     return False
         
         bal = self.get_balance()
         if bal < 10:

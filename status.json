@@ -1,7 +1,7 @@
 {
-  "last_run": "2026-03-11 16:01:24",
-  "balance": 48.9133,
-  "equity": 48.9133,
+  "last_run": "2026-03-15 21:59:03",
+  "balance": 100.1462,
+  "equity": 100.1462,
   "unrealized_pnl": 0.0,
   "positions": 0,
   "open_positions": [],
@@ -9,9 +9,7 @@
   "watchlist": [
     "BTC",
     "ETH",
-    "SOL",
-    "XRP",
-    "BNB"
+    "SOL"
   ],
   "top_signal": {
     "symbol": null,
@@ -20,26 +18,22 @@
   },
   "strategy_changes": [],
   "events": [
-    "V2\u626b\u63cf 16:01:23",
-    "BTC: MA30\u659c\u73870.033%<0.15%",
-    "ETH: MA30\u659c\u73870.038%<0.15%",
-    "SOL: MA30\u659c\u73870.014%<0.15%",
-    "XRP: MA30\u659c\u73870.035%<0.15%",
-    "BNB: MA30\u659c\u73870.046%<0.15%"
+    "V2 掃描 21:59:02",
+    "BTC: MA30 斜率0.008%<0.15%",
+    "ETH: MA30 斜率0.014%<0.15%",
+    "SOL: MA30 斜率0.025%<0.15%"
   ],
   "strategy_v2": {
-    "version": "\u8d8b\u52bf\u56de\u8c03v2.0",
-    "takeProfit": "\u7b2c\u4e00\u76ee\u6807+4.0%\u535650%\uff0c\u7b2c\u4e8c\u76ee\u6807+8.0%\u5168\u5356",
-    "stopLoss": "\u56fa\u5b9a1.5% + \u7ed3\u6784\u4fdd\u62a4",
-    "leverage": "\u6ce2\u52a8\u7387<1.5%\u752810x\uff0c1.5-3%\u75287x\uff0c>3%\u75285x",
-    "positionSize": "\u5355\u7b1410.0%-15.0%\u4ed3\u4f4d\uff0c\u6700\u591a3\u6301\u4ed3",
-    "entryLogic": "MA\u8d8b\u52bf\u5224\u65ad+4\u90093\u56de\u8c03\u5f00\u4ed3",
+    "version": "趨勢回調 v2.0",
+    "takeProfit": "第一目標 +1.2%賣出 50%，第二目標 +0.0% 全賣",
+    "stopLoss": "固定0.8% + 結構保護",
+    "leverage": "低波動10x / 中波動7x / 高波動5x",
+    "positionSize": "單筆10%-15%倉位，最多3持倉",
+    "entryLogic": "MA 趨勢判斷 + 4 選 3 回調開倉",
     "coins": [
-      "OPNUSDT",
-      "PIXELUSDT",
-      "FILUSDT",
-      "XPLUSDT",
-      "ROBOUSDT"
+      "BTC",
+      "ETH",
+      "SOL"
     ],
     "topN": 5
   }

@@ -1,183 +1,95 @@
-# 小龍蝦 24小時交易看盤
+# 小龍蝦 24小時交易看盤 v2.0.3
 
-這是一個針對 Binance **現貨（Spot）** 的本地交易看板專案，包含：
+這是一個針對 Binance **現貨（Spot）** 的即時交易看板專案，旨在提供 100% 同步於幣安帳戶的極速看盤體驗。
 
-- 即時看板頁面（`index.html`）
-- Spot 餘額 / 持倉 /買入均價 顯示
-- OpenClaw 本機模型 / 版本顯示
-- 策略狀態與思考流展示
-- 本機 HTTP 看板服務
+---
 
-> 目前這個版本的定位是：**本地看盤 + 輔助決策 + 手動/半手動交易支援**。
-> 並不是一個預設會自動替你連續下單的公開 SaaS 服務。
+## v2.0.3 更新亮點
+
+- **100% 直連幣安行情**：網頁前端直接向幣安 API 請求報價，價格跳動毫秒級同步。
+- **即時帳戶淨值計算**：自動根據持倉數量與即時市價，動態計算帳戶總資產（Equity）與持倉市值。
+- **全自動持倉偵測**：背景腳本每 5 秒掃描帳戶，一旦自動/手動買入新幣種（如 SOL），看板會立即自動加入顯示。
+- **真實成交歷史對齊**：修正了成交時間差，直接讀取幣安真實成交時間（台北時間）並自動計算成交後的即時損益（PnL）。
+- **極速自動刷新**：全網頁設定 5 秒強同步機制，無需手動整理即可掌握最新市場與帳戶變動。
 
 ---
 
 ## 功能特色
 
 - 繁體中文介面
-- Binance Spot 帳戶讀取
-- 顯示目前持倉、買入均價、目前市價
-- 顯示 OpenClaw 目前模型、預設模型、版本、更新時間
-- 支援本機區網存取
-- 可搭配 OpenClaw / Telegram 使用
+- Binance Spot 帳戶實時讀取
+- 顯示即時持倉、買入均價、目前市價、未實現損益
+- 顯示 OpenClaw 模型資訊與 AI 思考流
+- 支援本機區網存取與 Cloudflare Tunnel 遠端看盤
 
 ---
 
 ## 需求
 
-- macOS / Linux
-- Python 3.10+
-- Binance API Key / Secret
-- OpenClaw（若要顯示本機模型資訊）
+- macOS / Linux / Windows (WSL)
+- Python 3.9+
+- Binance API Key / Secret (需開啟讀取與交易權限)
 
 ---
 
-## 安裝
+## 安裝與啟動
 
 ### 1. 下載專案
 
 ```bash
-git clone <YOUR_REPO_URL>
-cd openclaw-trading-bot
+git clone https://github.com/ericpan001/Openclaw-spot-Dashboard.git
+cd Openclaw-spot-Dashboard
 ```
 
-### 2. 建立 `.env`
+### 2. 設定環境變數
 
-```bash
-cp .env.example .env
-```
-
-填入你的 Binance API 憑證：
+建立 `.env` 檔案並填入憑證：
 
 ```env
-BINANCE_API_KEY=your_binance_api_key_here
-BINANCE_SECRET_KEY=your_binance_secret_key_here
+BINANCE_API_KEY=你的API_KEY
+BINANCE_SECRET_KEY=你的SECRET_KEY
 ```
 
----
+### 3. 啟動服務
 
-## 啟動方式
-
-### 啟動看板
-
+**開啟網頁服務：**
 ```bash
 ./run-web.sh
 ```
 
-預設會在：
-
+**開啟背景數據同步與交易監控：**
 ```bash
-http://127.0.0.1:1688
+python3 update_dashboard_holdings.py &
+python3 sync_real_trades.py &
+python3 trade_v2.py run
 ```
-
-### 單次更新策略 / 狀態
-
-```bash
-python3 update_strategy_status.py
-python3 update_dashboard_meta.py
-python3 update_dashboard_holdings.py
-python3 trade_v2.py run-once
-```
-
-### 持續執行 bot
-
-```bash
-./trade.sh
-```
-
-
-## 連線與安全說明
-
-### 預設連線位址
-
-看板預設使用：
-
-```bash
-http://127.0.0.1:1688
-```
-
-如果你要讓同一個區網內的其他裝置連線，可以使用這台主機的區網 IP：
-
-```bash
-http://<你的區網IP>:1688
-```
-
-例如：
-
-```bash
-http://192.168.1.1:1688
-```
-
-### 區網存取條件
-
-其他裝置能否成功連線，取決於：
-
-- 你的主機目前是否正在監聽 `1688`
-- 對方裝置是否與主機在同網段，或網路之間有可用路由
-- 防火牆是否允許該連線
-
-如果是跨網段存取（例如不同 VLAN / 不同子網），請自行確認：
-
-- 路由設定
-- 防火牆規則
-- 是否需要 VPN / Tailscale / 反向代理
-
-### 安全建議
-
-- **不要直接把此看板暴露到公網**
-- 建議只在本機或可信任區網中使用
-- 若要遠端存取，建議優先使用：
-  - VPN
-  - Tailscale
-  - 受保護的反向代理
-
-### Binance API 安全建議
-
-- 啟用 **IP 白名單**
-- 不要開啟不必要的 API 權限
-- 若可以，將：
-  - **讀取 / 看盤用途**
-  - **交易用途**
-  分開使用不同 API key
-- 不要把 `.env`、API key、secret 上傳到 GitHub
-
-### 開放區網時的風險提醒
-
-只要有其他裝置能連到這個看板，就代表它們能看到：
-
-- 持倉資訊
-- 買入均價
-- 目前市價
-- 策略狀態
-- 事件訊息
-
-所以請只在你信任的網路環境中開放。
 
 ---
 
-## 主要檔案
+## 安全建議
 
-- `index.html`：前端看板
-- `trade_v2.py`：主要策略 / 狀態更新
-- `update_strategy_status.py`：策略狀態整理
-- `update_dashboard_meta.py`：抓 OpenClaw 模型 / 版本資訊
-- `update_dashboard_holdings.py`：抓 Spot 持倉 / 均價資訊
-- `run-web.sh`：啟動本機看板服務
-- `trade.sh`：啟動交易程式
+- **不要直接把此看板暴露到公網**：建議配合 Cloudflare Tunnel 或 VPN 使用。
+- **API 安全**：請務必在幣安後台開啟 **IP 白名單限制**，僅允許你的伺服器/主機存取。
+- **不要上傳 .env**：專案已預設 `.gitignore` 排除環境變數檔，請勿移除。
+
+---
+
+## 主要組件
+
+- `index.html`：即時看盤前端（支援直連幣安 API）
+- `trade_v2.py`：核心交易策略與思考流產出
+- `sync_real_trades.py`：真實成交紀錄同步工具
+- `update_dashboard_holdings.py`：資產與持倉即時同步工具
 
 ---
 
 ## 注意事項
 
-- `.env` 不會被提交到 Git
-- 請勿把真實 API key / secret 上傳到 GitHub
-- 若你要對外發佈，建議先確認是否要保留任何本機化設定
-- 本專案涉及真實資產，請自行承擔交易風險
+- 本專案涉及真實資產，策略僅供參考，請自行承擔交易風險。
+- 專案由 OpenClaw 小雲輔助開發。
 
 ---
 
 ## 授權
 
-如果你要公開釋出，建議你再補一個 LICENSE。
-目前可先視為私人專案模板使用。
+私人專案模板，建議僅供學習與個人交易輔助使用。
