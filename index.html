@@ -120,6 +120,8 @@
         let prices = {};
         let holdings = [];
         let assets = {};
+        // [優化 3.0] 使用本地對象來永久鎖定本次 Session 的最高獲利點
+        let localMaxCache = {}; 
 
         // 1. WebSocket 毫秒級價格接收
         function initWebSocket() {
@@ -136,14 +138,16 @@
 
         async function fetchBaseData() {
             const bust = Date.now();
-            const [hRes, aRes, tRes, thRes] = await Promise.all([
+            const [hRes, aRes, tRes, thRes, apRes] = await Promise.all([
                 fetch(`dashboard_holdings.json?t=${bust}`).then(r => r.json()),
                 fetch(`dashboard_assets.json?t=${bust}`).then(r => r.json()),
                 fetch(`trades.json?t=${bust}`).then(r => r.json()),
-                fetch(`thinking.json?t=${bust}`).then(r => r.json())
+                fetch(`thinking.json?t=${bust}`).then(r => r.json()),
+                fetch(`dashboard_active_positions.json?t=${bust}`).then(r => r.json()).catch(() => ({}))
             ]);
             holdings = hRes.holdings || [];
             assets = aRes;
+            activePositions = apRes;
             updateTables(tRes, thRes);
         }
 
@@ -160,9 +164,26 @@
                 totalInvested += value;
                 totalUnrealizedPnl += pnl;
 
-                // 模擬移動止盈追蹤 (前端展示)
-                const maxPnl = Math.max(pnlPct, 0); // 這裡簡化處理
-                const pullback = maxPnl > 4 ? (maxPnl - pnlPct).toFixed(2) : 0;
+                // 使用後端提供的 max_pnl 或本地計算的較高者
+                let backendMaxPnl = 0;
+                if (activePositions[h.symbol] && activePositions[h.symbol].max_pnl) {
+                    backendMaxPnl = activePositions[h.symbol].max_pnl * 100;
+                }
+                
+                // [優化 3.0 PRO] 真·前端本地高點鎖定
+                // 讀取 SessionStorage (防止重新整理遺失)
+                let savedLocalMax = parseFloat(sessionStorage.getItem(`max_${h.symbol}`) || "0");
+                
+                // 取 目前損益、後台紀錄、本地紀錄 三者之中的「絕對最高點」
+                const realMaxPnl = Math.max(pnlPct, backendMaxPnl, savedLocalMax);
+                
+                // 只要一創新高，就立刻寫入 SessionStorage 永久鎖定
+                if (realMaxPnl > savedLocalMax) {
+                    sessionStorage.setItem(`max_${h.symbol}`, realMaxPnl.toString());
+                }
+                
+                // 計算回落距離 (天花板 - 目前)
+                const pullback = realMaxPnl > pnlPct ? (realMaxPnl - pnlPct).toFixed(2) : "0.00";
 
                 return `
                 <div class="m-card" style="margin-bottom:10px; background:rgba(255,255,255,0.05);">
@@ -178,7 +199,7 @@
                     <div class="trailing-box">
                         <div style="display:flex; justify-content:space-between; font-size:0.8rem;">
                             <span>目前損益: <b class="${pnlPct>=0?'positive':'negative'}">${pnlPct.toFixed(2)}%</b></span>
-                            <span>最高獲利點: <b>${maxPnl.toFixed(2)}%</b></span>
+                            <span>最高獲利點: <b>${realMaxPnl.toFixed(2)}%</b></span>
                             <span class="warning">回落距離: <b>${pullback}%</b></span>
                         </div>
                         <div style="height:4px; background:#333; margin-top:10px; border-radius:2px;">

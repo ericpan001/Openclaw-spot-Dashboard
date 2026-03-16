@@ -73,11 +73,12 @@ class Config:
     version: str = "2.0-trend-reversal"
     top_n: int = 5
     max_concurrent_positions: int = 3
-    position_size_min: float = 0.10
-    position_size_max: float = 0.15
+    position_size_min: float = 0.25
+    position_size_max: float = 0.35
     fixed_loss_pct: float = 0.015
     # [優化 3.0] 移動止盈 (Trailing Stop) 與 動態倉位設定
     first_target_pct: float = 0.04
+    first_target_close_pct: float = 0.5         # [修復] 補回缺失的屬性
     trailing_stop_activation_pct: float = 0.04  # 獲利 4% 啟動移動止盈
     trailing_stop_callback_pct: float = 0.01    # 從高點回落 1% 就出場
     second_target_pct: float = 0.12             # 調高第二目標到 12%
@@ -409,12 +410,14 @@ class TrendStrategy:
             return False, f"MA30 斜率{ma30_slope:.3f}%<0.05%"
         
         vol_15m = TechnicalIndicators.volatility(klines, 15)
-        if vol_15m < 1.0:
-            return False, f"波動率{vol_15m:.2f}%<1%"
+        # [已優化] 將波動率門檻從 1.0% 大幅調低至 0.1%，適應目前緩漲行情
+        if vol_15m < 0.1:
+            return False, f"波動率{vol_15m:.2f}%<0.1%"
         
         crosses = TechnicalIndicators.count_ma_crosses(klines, 5, 10)
-        if crosses >= 3:
-            return False, f"MA交叉{crosses}次>=3"
+        # [優化 3.0] 放寬震盪過濾：從 3 次提高到 10 次，適應強勢震盪上行行情
+        if crosses >= 10:
+            return False, f"MA交叉{crosses}次>=10"
         
         return True, "OK"
     
@@ -653,6 +656,49 @@ class TradingBot:
             "top_signal": top_signal or {"symbol": None, "direction": None, "score": None},
             "events": (events or self.last_events or ["v2 running"])[-8:],
             "strategy_v2": {
+                "version": "趨勢回調 v3.0 PRO",
+                "takeProfit": f"第一目標 +4% 啟動移動止盈，回落 1% 自動賣出",
+                "stopLoss": f"固定 1.5% + 結構保護",
+                "positionSize": "單筆 30% 重倉模式",
+                "entryLogic": "MA 斜率(0.05%) + 波動率(0.1%) + 10次交叉放寬",
+                "coins": [symbol.replace("USDT", "") for symbol in self.trading_coins],
+            }
+        })
+        write_json(STATUS_FILE, status)
+        self._export_positions()
+
+    def _export_positions(self):
+        try:
+            export_data = {}
+            for sym, pos in self.positions.items():
+                export_data[sym] = {
+                    "max_pnl": pos.get("max_pnl", 0.0)
+                }
+            write_json(BASE_DIR / "dashboard_active_positions.json", export_data)
+        except Exception as e:
+            print(f"導出持倉失敗: {e}")
+
+        status = read_json(STATUS_FILE, {})
+        balance = self.get_balance()
+        open_positions, total_unrealized = self.build_open_positions()
+
+        strategy_v2 = read_json(STRATEGY_V2_FILE, {})
+        take_profit = strategy_v2.get("takeProfit", {})
+        stop_loss = strategy_v2.get("stopLoss", {})
+        position = strategy_v2.get("position", {})
+
+        status.update({
+            "last_run": self.now_str(),
+            "balance": round(float(balance), 4),
+            "equity": round(float(balance + total_unrealized), 4),
+            "unrealized_pnl": round(float(total_unrealized), 4),
+            "positions": len(open_positions),
+            "open_positions": open_positions,
+            "mode": "strategy-v2",
+            "watchlist": [symbol.replace("USDT", "") for symbol in self.trading_coins],
+            "top_signal": top_signal or {"symbol": None, "direction": None, "score": None},
+            "events": (events or self.last_events or ["v2 running"])[-8:],
+            "strategy_v2": {
                 "version": "趨勢回調 v2.0",
                 "takeProfit": f"第一目標 +{take_profit.get('firstTargetPct', 4) * 100:.1f}%賣出 50%，第二目標 +{take_profit.get('secondTargetPct', 8) * 100:.1f}% 全賣",
                 "stopLoss": f"固定{stop_loss.get('fixedLossPct', 1.5) * 100:.1f}% + 結構保護",
@@ -844,6 +890,35 @@ class TradingBot:
     
     def check_positions(self):
         now = time.time()
+        
+        # [優化 3.0] 強制接管邏輯：將帳戶中的現貨自動納入機器人監控名單
+        try:
+            all_holdings = self.get_all_holdings()
+            for h in all_holdings:
+                symbol = h['symbol']
+                # 發現未被監控的現貨，強制領養
+                if symbol in self.trading_coins and symbol not in self.positions:
+                    current_pnl = 0.0
+                    try:
+                        # 抓個即時價來算初始 PnL，避免 max_pnl 從 0 開始導致誤判
+                        ticker = self.client._request(f"/api/v3/ticker/price?symbol={symbol}")
+                        if ticker:
+                            cur_p = float(ticker['price'])
+                            current_pnl = (cur_p - h['avgBuyPrice']) / h['avgBuyPrice']
+                    except: pass
+
+                    self.positions[symbol] = {
+                        "symbol": symbol,
+                        "direction": "long",
+                        "entry": h['avgBuyPrice'],
+                        "qty": h['quantity'],
+                        "open_time": now,
+                        "max_pnl": max(current_pnl, 0.0)
+                    }
+                    self.add_thought(f"📥 接管持倉: {symbol} (當前PnL: {current_pnl*100:.2f}%)")
+        except:
+            pass
+
         for symbol, pos in list(self.positions.items()):
             # 趨勢破壞
             if self.strategy.check_trend_break(symbol, pos["direction"]):
@@ -956,6 +1031,7 @@ class TradingBot:
         if bal > self.highest_balance:
             self.highest_balance = bal
         self.update_status(events=self.last_events, top_signal=top_signal)
+        self._export_positions()
     
     def run(self):
         print("=" * 50)

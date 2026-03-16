@@ -55,7 +55,8 @@ def main():
                             "asset": asset,
                             "symbol": symbol,
                             "quantity": total,
-                            "avgBuyPrice": avg_price
+                            "avgBuyPrice": avg_price,
+                            "max_pnl": self.positions[symbol].get("max_pnl", 0.0) if symbol in self.positions else 0.0
                         })
             
             OUT.write_text(json.dumps({"holdings": holdings, "updatedAt": int(time.time()*1000)}, indent=2))
