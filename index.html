@@ -3,238 +3,229 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenClaw 即時交易看盤</title>
+    <title>小龍蝦 3.0 極速移動止盈看盤</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
-            --bg: #050816;
-            --panel: rgba(9, 16, 34, 0.72);
-            --border: rgba(118, 167, 255, 0.18);
+            --bg: #030611;
+            --panel: rgba(13, 23, 46, 0.85);
+            --border: rgba(118, 167, 255, 0.25);
             --text: #f4fbff;
-            --text-soft: rgba(224, 236, 255, 0.7);
-            --text-mute: rgba(160, 181, 214, 0.56);
             --positive: #00f7b2;
             --negative: #ff5f7c;
-            --neutral: #6cb7ff;
             --cyan: #33d7ff;
+            --warning: #ffcc00;
             --radius-lg: 24px;
-            --radius-md: 18px;
         }
         body {
-            background: linear-gradient(135deg, #030611 0%, #071121 48%, #030814 100%);
+            background: radial-gradient(circle at top right, #0a1835, var(--bg));
             color: var(--text);
             font-family: 'Sora', sans-serif;
-            overflow: auto;
-            padding: 12px;
+            padding: 15px;
+            overflow-x: hidden;
         }
-        .app-shell { display: grid; grid-template-rows: auto auto 1fr; gap: 10px; }
         .shell-card {
-            background: linear-gradient(180deg, rgba(13, 23, 46, 0.88), rgba(7, 14, 28, 0.78));
+            background: var(--panel);
             border: 1px solid var(--border);
             border-radius: var(--radius-lg);
-            backdrop-filter: blur(18px);
+            backdrop-filter: blur(20px);
             padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
         }
-        .topbar { display: flex; justify-content: space-between; align-items: center; }
-        .brand-title { font-family: 'Orbitron', sans-serif; font-size: 2rem; color: var(--cyan); }
-        .live-chip { color: var(--positive); font-weight: 700; }
+        .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .brand { font-family: 'Orbitron', sans-serif; font-size: 1.8rem; color: var(--cyan); text-shadow: 0 0 15px var(--cyan); }
+        .status-badge { font-size: 0.75rem; padding: 5px 12px; border-radius: 99px; background: rgba(0,247,178,0.1); border: 1px solid var(--positive); color: var(--positive); }
+        
+        .hero-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 15px; }
+        .m-card { padding: 18px; border-radius: 20px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); position: relative; overflow: hidden; }
+        .m-label { font-size: 0.7rem; color: rgba(160, 181, 214, 0.7); text-transform: uppercase; letter-spacing: 1px; }
+        .m-value { font-family: 'Orbitron', sans-serif; font-size: 1.6rem; margin-top: 5px; }
+        
+        .main-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 15px; }
+        .pos-panel { min-height: 400px; position: relative; }
+        .trailing-box { margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 15px; border-left: 4px solid var(--warning); }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.85rem; }
+        th { text-align: left; color: rgba(160, 181, 214, 0.6); padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+        td { padding: 12px 5px; border-bottom: 1px solid rgba(255,255,255,0.03); }
 
-        .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 10px; }
-        .metric-card { padding: 15px; border-radius: var(--radius-md); border: 1px solid var(--border); background: rgba(8, 16, 31, 0.5); }
-        .metric-label { font-size: 0.7rem; color: var(--text-mute); text-transform: uppercase; letter-spacing: 1px; }
-        .metric-value { font-family: 'Orbitron', sans-serif; font-size: 1.5rem; margin-top: 5px; }
+        .think-list { height: 450px; overflow-y: auto; scrollbar-width: thin; }
+        .think-item { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.03); margin-bottom: 8px; border-left: 3px solid var(--cyan); }
+        
         .positive { color: var(--positive); }
         .negative { color: var(--negative); }
-        .neutral { color: var(--neutral); }
-
-        .main-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; margin-top: 10px; }
-        .panel { min-height: 300px; padding: 15px; }
-        .panel-title { font-family: 'Orbitron', sans-serif; font-size: 1rem; margin-bottom: 10px; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+        .warning { color: var(--warning); }
         
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
-        th { text-align: left; color: var(--text-mute); padding: 8px; border-bottom: 1px solid var(--border); }
-        td { padding: 10px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-
-        .thinking-list { height: 400px; overflow-y: auto; font-size: 0.85rem; }
-        .thinking-item { margin-bottom: 10px; padding: 10px; border-left: 3px solid var(--cyan); background: rgba(255,255,255,0.03); border-radius: 4px; }
-        .thinking-time { color: var(--text-mute); font-size: 0.7rem; }
-
-        .chart-container { height: 250px; position: relative; }
-        .token-pill { display: inline-block; padding: 4px 10px; background: rgba(0,247,178,0.1); border: 1px solid var(--positive); border-radius: 99px; font-size: 0.7rem; margin-right: 5px; color: var(--positive); }
+        /* WebSocket Pulse Effect */
+        .pulse { animation: pulse-red 2s infinite; }
+        @keyframes pulse-red { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
-    <div class="app-shell">
-        <header class="shell-card topbar">
-            <div>
-                <h1 class="brand-title">小龍蝦 24H 即時看盤</h1>
-                <p style="font-size:0.8rem; color:var(--text-soft)">100% 直連幣安 API，每 5 秒強同步</p>
-            </div>
-            <div class="live-chip">● LIVE <span id="liveClock">--:--:--</span></div>
-        </header>
-
-        <section class="overview-grid">
-            <div class="metric-card">
-                <div class="metric-label">即時總淨值 (Equity)</div>
-                <div class="metric-value positive" id="currentBalance">--</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">可用 USDT</div>
-                <div class="metric-value neutral" id="remainingUsdt">--</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">持倉市值</div>
-                <div class="metric-value neutral" id="investedValue">--</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">未實現損益</div>
-                <div class="metric-value" id="positionPnl">--</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">24H 交易數</div>
-                <div class="metric-value neutral" id="totalTrades">--</div>
-            </div>
-        </section>
-
-        <main class="main-layout">
-            <div class="left-col">
-                <section class="shell-card panel">
-                    <div class="panel-title">持倉與資產同步 (每 5s 輪播)</div>
-                    <div id="holdingBox">
-                        <h2 id="currentCoin">--</h2>
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:15px;">
-                            <div>
-                                <div class="metric-label">買入成本</div>
-                                <div id="avgPrice" class="metric-value">--</div>
-                            </div>
-                            <div>
-                                <div class="metric-label">即時市價</div>
-                                <div id="livePrice" class="metric-value positive">--</div>
-                            </div>
-                        </div>
-                        <div style="margin-top:15px;">
-                            <div class="metric-label">持有數量</div>
-                            <div id="coinQty" style="font-size:1.2rem">--</div>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="shell-card panel" style="margin-top:10px;">
-                    <div class="panel-title">最近交易紀錄</div>
-                    <table id="tradeTable">
-                        <thead><tr><th>時間</th><th>方向</th><th>價格</th><th>盈虧</th></tr></thead>
-                        <tbody></tbody>
-                    </table>
-                </section>
-            </div>
-
-            <div class="right-col">
-                <section class="shell-card panel">
-                    <div class="panel-title">AI 思考流</div>
-                    <div class="thinking-list" id="thinkingList"></div>
-                </section>
-            </div>
-        </main>
+    <div class="topbar shell-card">
+        <div class="brand">🦞 小龍蝦 3.0 PRO</div>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <div class="status-badge pulse">● TELEGRAM BOT ACTIVE</div>
+            <div id="wsStatus" class="status-badge" style="border-color:var(--cyan); color:var(--cyan);">WebSocket Syncing...</div>
+        </div>
     </div>
 
+    <section class="hero-grid">
+        <div class="m-card">
+            <div class="m-label">即時總淨值 (Equity)</div>
+            <div class="m-value positive" id="totalEquity">--</div>
+        </div>
+        <div class="m-card">
+            <div class="m-label">可用 USDT 餘額</div>
+            <div class="m-value" id="availUsdt">--</div>
+        </div>
+        <div class="m-card">
+            <div class="m-label">持倉總市值</div>
+            <div class="m-value" id="investedValue" style="color:var(--cyan)">--</div>
+        </div>
+        <div class="m-card">
+            <div class="m-label">未實現總盈虧</div>
+            <div class="m-value" id="totalPnl">--</div>
+        </div>
+    </section>
+
+    <main class="main-layout">
+        <div class="left-col">
+            <section class="shell-card pos-panel">
+                <h3 style="font-family:'Orbitron'; margin-bottom:15px; font-size:0.9rem;">🎯 持倉追蹤與移動止盈 (Trailing Stop)</h3>
+                <div id="holdingArea">
+                    <div style="text-align:center; padding:50px; color:rgba(255,255,255,0.2);">正在等待 WebSocket 數據...</div>
+                </div>
+                
+                <h3 style="font-family:'Orbitron'; margin-top:30px; margin-bottom:10px; font-size:0.9rem;">📜 最近成交明細</h3>
+                <table id="tradeList">
+                    <thead><tr><th>時間</th><th>資產</th><th>方向</th><th>價格</th><th>盈虧</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </section>
+        </div>
+
+        <div class="right-col">
+            <section class="shell-card">
+                <h3 style="font-family:'Orbitron'; margin-bottom:15px; font-size:0.9rem;">🧠 AI 思考流 (Telegram 同步)</h3>
+                <div class="think-list" id="thinkArea"></div>
+            </section>
+        </div>
+    </main>
+
     <script>
-        function updateClock() {
-            document.getElementById('liveClock').textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-        }
+        let ws;
+        let prices = {};
+        let holdings = [];
+        let assets = {};
 
-        async function loadData() {
-            try {
-                const bust = Date.now();
-                // 1. 同步抓取基礎資料
-                const [thoughts, trades, holdingsMeta, assetsMeta, ordersMeta] = await Promise.all([
-                    fetch(`thinking.json?t=${bust}`).then(r => r.json()),
-                    fetch(`trades.json?t=${bust}`).then(r => r.json()),
-                    fetch(`dashboard_holdings.json?t=${bust}`).then(r => r.json()).catch(() => ({holdings:[]})),
-                    fetch(`dashboard_assets.json?t=${bust}`).then(r => r.json()).catch(() => ({})),
-                    fetch(`dashboard_orders.json?t=${bust}`).then(r => r.json()).catch(() => ({orderCount:0}))
-                ]);
-
-                // 2. 直連幣安抓取全市場即時市價
-                const priceRes = await fetch('https://api.binance.com/api/v3/ticker/price');
-                const prices = await priceRes.json();
-                const priceMap = {};
-                prices.forEach(p => priceMap[p.symbol] = Number(p.price));
-
-                // 3. 計算 100% 即時數據
-                const holdings = holdingsMeta.holdings || [];
-                let totalHoldingsValue = 0;
-                let totalUnrealizedPnl = 0;
-
-                holdings.forEach(h => {
-                    const currentPrice = priceMap[h.symbol] || 0;
-                    const value = currentPrice * Number(h.quantity);
-                    const pnl = (currentPrice - Number(h.avgBuyPrice)) * Number(h.quantity);
-                    totalHoldingsValue += value;
-                    totalUnrealizedPnl += pnl;
-                    h.currentPrice = currentPrice; // 注入 100% 即時價
+        // 1. WebSocket 毫秒級價格接收
+        function initWebSocket() {
+            ws = new WebSocket('wss://stream.binance.com:9443/ws/!miniTicker@arr');
+            ws.onopen = () => document.getElementById('wsStatus').textContent = '⚡ WS REALTIME';
+            ws.onmessage = (evt) => {
+                const data = JSON.parse(evt.data);
+                data.forEach(ticker => {
+                    prices[ticker.s] = parseFloat(ticker.c);
                 });
-
-                const remainingUsdt = Number(assetsMeta.remainingUsdt || 0);
-                const totalEquity = remainingUsdt + totalHoldingsValue;
-
-                // 4. 更新 UI - 強制即時反應
-                document.getElementById('currentBalance').textContent = totalEquity.toFixed(2) + ' USDT';
-                document.getElementById('remainingUsdt').textContent = remainingUsdt.toFixed(2) + ' USDT';
-                document.getElementById('investedValue').textContent = totalHoldingsValue.toFixed(2) + ' USDT'; // 持倉市值即時化
-                
-                const pnlEl = document.getElementById('positionPnl');
-                pnlEl.textContent = (totalUnrealizedPnl >= 0 ? '+' : '') + totalUnrealizedPnl.toFixed(2) + ' USDT';
-                pnlEl.className = 'metric-value ' + (totalUnrealizedPnl >= 0 ? 'positive' : 'negative');
-                
-                document.getElementById('totalTrades').textContent = String(ordersMeta.orderCount).padStart(2, '0');
-
-                // 5. 輪播處理 (持倉優先，沒持倉顯示監控幣)
-                if (holdings.length > 0) {
-                    const slot = Math.floor(Date.now() / 5000) % holdings.length;
-                    const h = holdings[slot];
-                    document.getElementById('currentCoin').textContent = h.asset + ' (持倉中 ' + (slot+1) + '/' + holdings.length + ')';
-                    document.getElementById('avgPrice').textContent = h.avgBuyPrice.toFixed(2);
-                    document.getElementById('livePrice').textContent = h.currentPrice.toFixed(2);
-                    document.getElementById('coinQty').textContent = Number(h.quantity).toFixed(6) + ' ' + h.asset;
-                } else {
-                    document.getElementById('currentCoin').textContent = "目前無持倉";
-                    document.getElementById('avgPrice').textContent = "--";
-                    document.getElementById('livePrice').textContent = "--";
-                    document.getElementById('coinQty').textContent = "等待訊號中...";
-                }
-
-                // 6. 更新表格與思考流
-                const tradeBody = document.querySelector('#tradeTable tbody');
-                tradeBody.innerHTML = trades.slice(-5).reverse().map(t => `
-                    <tr>
-                        <td>${t.time.substring(11)}</td>
-                        <td class="${t.type==='BUY'?'positive':'negative'}">${t.type==='BUY'?'買入':'賣出'} ${t.symbol.replace('USDT','')}</td>
-                        <td>${Number(t.price).toFixed(2)}</td>
-                        <td class="${t.pnl>=0?'positive':'negative'}">${t.pnl?t.pnl.toFixed(2):'--'}</td>
-                    </tr>
-                `).join('');
-
-                const thinkEl = document.getElementById('thinkingList');
-                const visibleThoughts = thoughts.filter(t => !t.thought.includes('掃描')).slice(-15).reverse();
-                thinkEl.innerHTML = visibleThoughts.map(t => `
-                    <div class="thinking-item">
-                        <div class="thinking-time">${t.time}</div>
-                        <div>${t.thought}</div>
-                    </div>
-                `).join('');
-
-            } catch (e) {
-                console.error("即時更新失敗:", e);
-            }
+                renderUI();
+            };
         }
 
-        setInterval(updateClock, 1000);
-        setInterval(loadData, 5000); // 5 秒強同步一次
-        loadData();
+        async function fetchBaseData() {
+            const bust = Date.now();
+            const [hRes, aRes, tRes, thRes] = await Promise.all([
+                fetch(`dashboard_holdings.json?t=${bust}`).then(r => r.json()),
+                fetch(`dashboard_assets.json?t=${bust}`).then(r => r.json()),
+                fetch(`trades.json?t=${bust}`).then(r => r.json()),
+                fetch(`thinking.json?t=${bust}`).then(r => r.json())
+            ]);
+            holdings = hRes.holdings || [];
+            assets = aRes;
+            updateTables(tRes, thRes);
+        }
+
+        function renderUI() {
+            let totalInvested = 0;
+            let totalUnrealizedPnl = 0;
+            
+            const holdingHtml = holdings.map(h => {
+                const currentPrice = prices[h.symbol] || h.avgBuyPrice;
+                const value = currentPrice * h.quantity;
+                const pnl = (currentPrice - h.avgBuyPrice) * h.quantity;
+                const pnlPct = ((currentPrice - h.avgBuyPrice) / h.avgBuyPrice) * 100;
+                
+                totalInvested += value;
+                totalUnrealizedPnl += pnl;
+
+                // 模擬移動止盈追蹤 (前端展示)
+                const maxPnl = Math.max(pnlPct, 0); // 這裡簡化處理
+                const pullback = maxPnl > 4 ? (maxPnl - pnlPct).toFixed(2) : 0;
+
+                return `
+                <div class="m-card" style="margin-bottom:10px; background:rgba(255,255,255,0.05);">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h2 style="font-family:'Orbitron'; color:var(--cyan);">${h.asset}</h2>
+                        <div class="status-badge" style="border-color:var(--warning); color:var(--warning);">移動止盈監控中</div>
+                    </div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:15px; margin-top:15px;">
+                        <div><div class="m-label">持倉數量</div><div style="font-size:1rem;">${h.quantity.toFixed(4)}</div></div>
+                        <div><div class="m-label">買入成本</div><div style="font-size:1rem;">${h.avgBuyPrice.toFixed(2)}</div></div>
+                        <div><div class="m-label">即時價格</div><div style="font-size:1rem;" class="positive">${currentPrice.toFixed(2)}</div></div>
+                    </div>
+                    <div class="trailing-box">
+                        <div style="display:flex; justify-content:space-between; font-size:0.8rem;">
+                            <span>目前損益: <b class="${pnlPct>=0?'positive':'negative'}">${pnlPct.toFixed(2)}%</b></span>
+                            <span>最高獲利點: <b>${maxPnl.toFixed(2)}%</b></span>
+                            <span class="warning">回落距離: <b>${pullback}%</b></span>
+                        </div>
+                        <div style="height:4px; background:#333; margin-top:10px; border-radius:2px;">
+                            <div style="width:${Math.min(pnlPct*10, 100)}%; height:100%; background:var(--positive); border-radius:2px;"></div>
+                        </div>
+                        <p style="font-size:0.65rem; color:rgba(255,255,255,0.3); margin-top:8px;">※ 獲利達 4% 啟動追蹤，回落 1% 自動平倉</p>
+                    </div>
+                </div>
+                `;
+            }).join('');
+
+            document.getElementById('holdingArea').innerHTML = holdingHtml || '<div style="text-align:center; padding:50px; color:rgba(255,255,255,0.2);">目前無持倉，等待訊號中...</div>';
+            
+            const remainingUsdt = parseFloat(assets.remainingUsdt || 0);
+            document.getElementById('availUsdt').textContent = remainingUsdt.toFixed(2) + ' USDT';
+            document.getElementById('investedValue').textContent = totalInvested.toFixed(2) + ' USDT';
+            document.getElementById('totalEquity').textContent = (remainingUsdt + totalInvested).toFixed(2) + ' USDT';
+            
+            const pnlEl = document.getElementById('totalPnl');
+            pnlEl.textContent = (totalUnrealizedPnl >= 0 ? '+' : '') + totalUnrealizedPnl.toFixed(2) + ' USDT';
+            pnlEl.className = 'm-value ' + (totalUnrealizedPnl >= 0 ? 'positive' : 'negative');
+        }
+
+        function updateTables(trades, thoughts) {
+            const tBody = document.querySelector('#tradeList tbody');
+            tBody.innerHTML = trades.slice(-5).reverse().map(t => `
+                <tr>
+                    <td>${t.time.substring(11)}</td>
+                    <td style="font-weight:bold; color:var(--cyan);">${t.symbol.replace('USDT','')}</td>
+                    <td class="${t.type==='BUY'?'positive':'negative'}">${t.type==='BUY'?'買入':'賣出'}</td>
+                    <td>${t.price.toFixed(2)}</td>
+                    <td class="${t.pnl>=0?'positive':'negative'}">${t.pnl.toFixed(2)}</td>
+                </tr>
+            `).join('');
+
+            const thinkArea = document.getElementById('thinkArea');
+            thinkArea.innerHTML = thoughts.slice(-15).reverse().map(th => `
+                <div class="think-item">
+                    <div style="font-size:0.7rem; color:rgba(255,255,255,0.3);">${th.time}</div>
+                    <div style="margin-top:5px; font-size:0.85rem;">${th.thought}</div>
+                </div>
+            `).join('');
+        }
+
+        initWebSocket();
+        setInterval(fetchBaseData, 3000);
+        fetchBaseData();
     </script>
 </body>
 </html>

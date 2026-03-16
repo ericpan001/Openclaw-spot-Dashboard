@@ -76,9 +76,11 @@ class Config:
     position_size_min: float = 0.10
     position_size_max: float = 0.15
     fixed_loss_pct: float = 0.015
+    # [優化 3.0] 移動止盈 (Trailing Stop) 與 動態倉位設定
     first_target_pct: float = 0.04
-    first_target_close_pct: float = 0.5
-    second_target_pct: float = 0.08
+    trailing_stop_activation_pct: float = 0.04  # 獲利 4% 啟動移動止盈
+    trailing_stop_callback_pct: float = 0.01    # 從高點回落 1% 就出場
+    second_target_pct: float = 0.12             # 調高第二目標到 12%
     leverage_low_vol: int = 10
     leverage_mid_vol: int = 7
     leverage_high_vol: int = 5
@@ -402,8 +404,9 @@ class TrendStrategy:
         ma30_5_ago = TechnicalIndicators.sma(closes[:-5], 30) if len(closes) > 5 else ma30_c
         ma30_slope = abs(TechnicalIndicators.ma_slope(ma30_c, ma30_5_ago))
         
-        if ma30_slope < 0.15:
-            return False, f"MA30 斜率{ma30_slope:.3f}%<0.15%"
+        # [已優化] 將斜率門檻從 0.15% 調低至 0.05%，提高對微小趨勢的敏感度
+        if ma30_slope < 0.05:
+            return False, f"MA30 斜率{ma30_slope:.3f}%<0.05%"
         
         vol_15m = TechnicalIndicators.volatility(klines, 15)
         if vol_15m < 1.0:
@@ -863,6 +866,19 @@ class TradingBot:
             
             pnl = (price - entry) / entry if d == "long" else (entry - price) / entry
             
+            # [優化 3.0] 移動止盈 (Trailing Stop) 邏輯
+            if "max_pnl" not in pos:
+                pos["max_pnl"] = pnl
+            else:
+                pos["max_pnl"] = max(pos["max_pnl"], pnl)
+            
+            # 如果獲利達到啟動門檻 (4%)，開始監控回落
+            if pos["max_pnl"] >= self.config.trailing_stop_activation_pct:
+                # 如果從最高獲利點回落超過設定的 1%，則平倉
+                if (pos["max_pnl"] - pnl) >= self.config.trailing_stop_callback_pct:
+                    self.close_position(symbol, f"trailing_stop (High:{pos['max_pnl']*100:.1f}%)")
+                    continue
+
             # 止損
             sl = self.strategy.calc_sl(d, entry)
             if (d == "long" and price <= sl) or (d == "short" and price >= sl):
