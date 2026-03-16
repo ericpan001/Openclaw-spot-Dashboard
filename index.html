@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>小龍蝦 3.0 極速移動止盈看盤</title>
+    <title>小龍蝦 3.0.2 極速移動止盈看盤</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -65,7 +65,7 @@
 </head>
 <body>
     <div class="topbar shell-card">
-        <div class="brand">🦞 小龍蝦 3.0 PRO</div>
+        <div class="brand">🦞 小龍蝦 3.0.2 PRO</div>
         <div style="display:flex; gap:10px; align-items:center;">
             <div class="status-badge pulse">● TELEGRAM BOT ACTIVE</div>
             <div id="wsStatus" class="status-badge" style="border-color:var(--cyan); color:var(--cyan);">WebSocket Syncing...</div>
@@ -170,16 +170,15 @@
                     backendMaxPnl = activePositions[h.symbol].max_pnl * 100;
                 }
                 
-                // [優化 3.0 PRO] 真·前端本地高點鎖定
-                // 讀取 SessionStorage (防止重新整理遺失)
-                let savedLocalMax = parseFloat(sessionStorage.getItem(`max_${h.symbol}`) || "0");
+                // [優化 3.0.1 PRO] 真·前端本地高點鎖定 - 使用 LocalStorage 永久鎖定
+                let savedLocalMax = parseFloat(localStorage.getItem(`max_${h.symbol}`) || "0");
                 
                 // 取 目前損益、後台紀錄、本地紀錄 三者之中的「絕對最高點」
                 const realMaxPnl = Math.max(pnlPct, backendMaxPnl, savedLocalMax);
                 
-                // 只要一創新高，就立刻寫入 SessionStorage 永久鎖定
+                // 只要一創新高，就立刻寫入 LocalStorage 永久鎖定
                 if (realMaxPnl > savedLocalMax) {
-                    sessionStorage.setItem(`max_${h.symbol}`, realMaxPnl.toString());
+                    localStorage.setItem(`max_${h.symbol}`, realMaxPnl.toString());
                 }
                 
                 // 計算回落距離 (天花板 - 目前)

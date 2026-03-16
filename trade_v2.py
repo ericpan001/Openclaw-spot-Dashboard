@@ -1,21 +1,11 @@
 #!/usr/bin/env python3
 """
-OpenClaw 趨勢回調交易策略 v2.0
+OpenClaw 趨勢回調交易策略 v3.0.2 PRO
 永續合約趨勢回調交易策略
-
-规则文档：24条策略规则
 """
 
 from __future__ import annotations
-
-import argparse
-import hashlib
-import hmac
-import json
-import math
-import os
-import sys
-import time
+import argparse, hashlib, hmac, json, math, os, sys, time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,1063 +13,176 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-
 BASE_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://api.binance.com"
-USER_AGENT = "openclaw-trend-reversal/2.0"
+USER_AGENT = "openclaw-trend-reversal/3.0.2"
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 STATUS_FILE = BASE_DIR / "status.json"
 TRADES_FILE = BASE_DIR / "trades.json"
 THINKING_FILE = BASE_DIR / "thinking.json"
 STRATEGY_V2_FILE = BASE_DIR / "strategy_v2.json"
-
-
-def load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
+POSITIONS_DB = BASE_DIR / "positions_v2.json"
 
 def read_json(path: Path, default: Any) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
+    try: return json.loads(path.read_text(encoding="utf-8"))
+    except: return default
 
 def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-
-load_env_file(BASE_DIR / ".env")
-
-def ensure_credentials() -> None:
-    if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_SECRET_KEY"):
-        return
-    raise RuntimeError("Missing Binance API credentials. Copy .env.example to .env and fill BINANCE_API_KEY / BINANCE_SECRET_KEY.")
-
-
 @dataclass
 class Config:
-    """策略配置"""
-    version: str = "2.0-trend-reversal"
-    top_n: int = 5
-    max_concurrent_positions: int = 3
+    version: str = "3.0.2-PRO"
     position_size_min: float = 0.25
     position_size_max: float = 0.35
     fixed_loss_pct: float = 0.015
-    # [優化 3.0] 移動止盈 (Trailing Stop) 與 動態倉位設定
-    first_target_pct: float = 0.04
-    first_target_close_pct: float = 0.5         # [修復] 補回缺失的屬性
-    trailing_stop_activation_pct: float = 0.04  # 獲利 4% 啟動移動止盈
-    trailing_stop_callback_pct: float = 0.01    # 從高點回落 1% 就出場
-    second_target_pct: float = 0.12             # 調高第二目標到 12%
-    leverage_low_vol: int = 10
-    leverage_mid_vol: int = 7
-    leverage_high_vol: int = 5
-    low_vol_threshold: float = 0.015
-    mid_vol_threshold: float = 0.03
-    cooldown_general: int = 180
-    cooldown_after_sl: int = 300
-    limit_order_timeout: int = 10
-    time_exit_minutes: int = 30
-    fixed_coins: list[str] | None = None
+    trailing_stop_activation_pct: float = 0.05
+    trailing_stop_callback_pct: float = 0.015
+    first_target_pct: float = 0.05
+    time_exit_minutes: int = 1440
+    volatility_min_pct: float = 0.05
+    ma30_slope_min: float = 0.05
 
+def load_env():
+    env_path = BASE_DIR / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
 class BinanceClient:
-    """Binance API 客户端"""
-    
     def __init__(self, api_key: str = "", secret_key: str = ""):
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.base_url = BASE_URL
-    
+        self.api_key, self.secret_key, self.base_url = api_key, secret_key, BASE_URL
     def _sign(self, params: str) -> str:
-        return hmac.new(
-            self.secret_key.encode(), 
-            params.encode(), 
-            hashlib.sha256
-        ).hexdigest()
-    
-    def _request(self, endpoint: str, params: dict = None, signed: bool = False) -> dict:
-        url = f"{self.base_url}{endpoint}"
+        return hmac.new(self.secret_key.encode(), params.encode(), hashlib.sha256).hexdigest()
+    def _request(self, endpoint: str, params: dict = None, signed: bool = False, method: str = 'GET') -> dict:
+        url, query = f"{self.base_url}{endpoint}", ""
         if params:
             query = urlencode(params)
-            if signed:
-                query += f"&signature={self._sign(query)}"
-            url = f"{url}?{query}"
-        
-        headers = {"User-Agent": USER_AGENT}
-        if self.api_key:
-            headers["X-MBX-APIKEY"] = self.api_key
-        
-        req = Request(url, headers=headers)
+            if signed: query += f"&signature={self._sign(query)}"
+        if method == 'GET' and query: url, data = f"{url}?{query}", None
+        else: data = query.encode() if query else None
+        req = Request(url, data=data, headers={"User-Agent": USER_AGENT, "X-MBX-APIKEY": self.api_key}, method=method)
         try:
-            with urlopen(req, timeout=10) as response:
-                return json.loads(response.read().decode())
+            with urlopen(req, timeout=10) as resp: return json.loads(resp.read().decode())
         except Exception as e:
-            print(f"API Error: {e}")
+            if hasattr(e, 'read'): print(f"API Error: {e.read().decode()}")
             return {}
-    
-    def get_ticker_24h(self) -> list:
-        """获取24小时ticker数据（spot）"""
-        return self._request("/api/v3/ticker/24hr") or []
-    
     def get_klines(self, symbol: str, interval: str = "1m", limit: int = 60) -> list:
-        """获取K线数据（spot）"""
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        data = self._request("/api/v3/klines", params) or []
-        return [
-            {
-                "time": int(k[0]),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            }
-            for k in data
-        ]
-    
-    def get_account(self) -> dict:
-        """获取账户信息（spot）"""
-        timestamp = int(time.time() * 1000)
-        params = {"timestamp": timestamp, "recvWindow": 5000}
-        return self._request("/api/v3/account", params, signed=True) or {}
-    
-    def place_order(self, symbol: str, side: str, order_type: str, 
-                    quantity: float = None, price: float = None,
-                    reduce_only: bool = False, quote_order_qty: float = None) -> dict:
-        """下单（spot）
-
-        若設定 DRY_RUN=1，則只回傳模擬結果、不會真的送單。
-        """
-        timestamp = int(time.time() * 1000)
-        params = {
-            "symbol": symbol,
-            "side": side,
-            "type": order_type,
-            "timestamp": timestamp,
-            "recvWindow": 5000,
-        }
-        if DRY_RUN:
-            return {
-                "dryRun": True,
-                "symbol": symbol,
-                "side": side,
-                "type": order_type,
-                "quantity": quantity,
-                "quoteOrderQty": quote_order_qty,
-                "price": price,
-                "timestamp": timestamp,
-            }
-        if quantity:
-            params["quantity"] = quantity
-        if quote_order_qty:
-            params["quoteOrderQty"] = quote_order_qty
-        if price:
-            params["price"] = price
-            if order_type == "LIMIT":
-                params["timeInForce"] = "GTC"
-        return self._request("/api/v3/order", params, signed=True) or {}
-
-
-class TechnicalIndicators:
-    """技术指标计算"""
-    
-    @staticmethod
-    def sma(values: list, period: int) -> float:
-        if len(values) < period:
-            return values[-1] if values else 0
-        return sum(values[-period:]) / period
-    
-    @staticmethod
-    def atr(klines: list, period: int = 14) -> float:
-        if len(klines) < period + 1:
-            return 0
-        trs = []
-        for i in range(1, len(klines)):
-            high = klines[i]["high"]
-            low = klines[i]["low"]
-            prev_close = klines[i-1]["close"]
-            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-            trs.append(tr)
-        return sum(trs[-period:]) / period if trs else 0
-    
-    @staticmethod
-    def volatility(klines: list, period: int = 15) -> float:
-        if not klines:
-            return 0
-        current_price = klines[-1]["close"]
-        if current_price == 0:
-            return 0
-        atr = TechnicalIndicators.atr(klines, period)
-        return (atr / current_price) * 100
-    
-    @staticmethod
-    def ma_slope(ma_current: float, ma_past: float) -> float:
-        if ma_past == 0:
-            return 0
-        return ((ma_current - ma_past) / ma_past) * 100
-    
-    @staticmethod
-    def count_ma_crosses(klines: list, ma_p1: int = 5, ma_p2: int = 10) -> int:
-        if len(klines) < max(ma_p1, ma_p2) + 1:
-            return 0
-        closes = [k["close"] for k in klines]
-        crosses = 0
-        prev_diff = None
-        for i in range(max(ma_p1, ma_p2), len(closes)):
-            ma1 = TechnicalIndicators.sma(closes[:i+1], ma_p1)
-            ma2 = TechnicalIndicators.sma(closes[:i+1], ma_p2)
-            diff = ma1 - ma2
-            if prev_diff is not None:
-                if (prev_diff > 0 and diff < 0) or (prev_diff < 0 and diff > 0):
-                    crosses += 1
-            prev_diff = diff
-        return crosses
-    
-    @staticmethod
-    def hh_hl(klines: list) -> tuple:
-        if len(klines) < 30:
-            return False, False
-        highs = [k["high"] for k in klines[-30:]]
-        lows = [k["low"] for k in klines[-30:]]
-        hh = highs[-1] > highs[-2]
-        hl = lows[-1] > lows[-2]
-        lh = highs[-1] < highs[-2]
-        ll = lows[-1] < lows[-2]
-        return (hh and hl), (lh and ll)
-
-
-class CoinScorer:
-    """幣種評分系統"""
-    
-    def __init__(self, client: BinanceClient):
-        self.client = client
-    
-    def get_top_coins(self, top_n: int = 20) -> list:
-        """取得現貨成交額前 N 的幣種"""
-        import urllib.request
-        import json
-        
-        # 稳定币列表（过滤掉）
-        stable_coins = ['USDCUSDT', 'USDTUSDT', 'FDUSDUSDT', 'USD1USDT', 'USDDUSDT', 'TUSDUSDT', 'BUSDUSDT']
-        
-        url = "https://api.binance.com/api/v3/ticker/24hr"
-        try:
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'Mozilla/5.0')
-            with urllib.request.urlopen(req, timeout=10) as response:
-                tickers = json.loads(response.read().decode())
-        except Exception as e:
-            print(f"取得現貨資料失敗: {e}")
-            tickers = self.client.get_ticker_24h()
-        
-        # 過濾 USDT 交易對，排除穩定幣
-        usdt_pairs = [t for t in tickers if t.get("symbol", "").endswith("USDT") 
-                      and t.get("symbol", "") not in stable_coins]
-        # 按現貨成交額排序
-        sorted_tickers = sorted(usdt_pairs, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-        return [t["symbol"] for t in sorted_tickers[:top_n]]
-    
-    def get_top_scored(self, universe: list, top_n: int = 10) -> list:
-        """取得評分最高的幣種（使用百分位排名）"""
-        btc_klines = self.client.get_klines("BTCUSDT", "1m", 60)
-        eth_klines = self.client.get_klines("ETHUSDT", "1m", 60)
-        
-        btc_chg = (btc_klines[-1]["close"] - btc_klines[-30]["close"]) / btc_klines[-30]["close"] * 100 if len(btc_klines) >= 30 else 0
-        eth_chg = (eth_klines[-1]["close"] - eth_klines[-30]["close"]) / eth_klines[-30]["close"] * 100 if len(eth_klines) >= 30 else 0
-        
-        # 先取得所有幣種的原始指標值
-        coin_metrics = []
-        for symbol in universe:
-            metrics = self._calc_metrics(symbol, btc_chg, eth_chg)
-            if metrics:
-                coin_metrics.append((symbol, metrics))
-        
-        if not coin_metrics:
-            return []
-        
-        # 提取各项指标
-        price_changes = [m['price_change'] for _, m in coin_metrics]
-        vol_growths = [m['vol_growth'] for _, m in coin_metrics]
-        volatilities = [m['volatility'] for _, m in coin_metrics]
-        rel_changes = [m['rel_change'] for _, m in coin_metrics]
-        
-        # 计算百分位排名
-        def percentile_rank(value: float, values: list) -> float:
-            if not values or len(values) < 2:
-                return 50
-            sorted_vals = sorted(values)
-            try:
-                rank = sorted_vals.index(value) / (len(sorted_vals) - 1) * 100
-            except:
-                rank = 50
-            return rank
-        
-        # 計算每個幣種的綜合評分
-        scored = []
-        for symbol, metrics in coin_metrics:
-            p_score = percentile_rank(metrics['price_change'], price_changes)
-            v_score = percentile_rank(metrics['vol_growth'], vol_growths)
-            vola_score = percentile_rank(metrics['volatility'], volatilities)
-            r_score = percentile_rank(metrics['rel_change'], rel_changes)
-            
-            # 权重: 涨跌幅30%, 成交量增长25%, 波動率25%, 相对BTC/ETH 20%
-            total = p_score * 0.30 + v_score * 0.25 + vola_score * 0.25 + r_score * 0.20
-            scored.append((symbol, total))
-        
-        # 排序返回top_n
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [s[0] for s in scored[:top_n]]
-    
-    def _calc_metrics(self, symbol: str, btc_change: float, eth_change: float) -> dict:
-        """計算單一幣種的原始指標"""
-        klines_30m = self.client.get_klines(symbol, "1m", 60)
-        if not klines_30m or len(klines_30m) < 30:
-            return None
-        
-        closes = [k["close"] for k in klines_30m]
-        volumes = [k["volume"] for k in klines_30m]
-        
-        # 1. 30分钟涨跌幅（绝对值）
-        change_30m = abs((closes[-1] - closes[-30]) / closes[-30] * 100)
-        
-        # 2. 成交量增长率
-        vol_growth = 0
-        if len(volumes) >= 60:
-            vol_c = sum(volumes[-30:]) / 30
-            vol_p = sum(volumes[-60:-30]) / 30
-            vol_growth = (vol_c - vol_p) / vol_p * 100 if vol_p > 0 else 0
-        
-        # 3. 波動率
-        volatility = TechnicalIndicators.volatility(klines_30m, 30)
-        
-        # 4. 相对BTC/ETH涨跌幅差值
-        rel_change = (change_30m - btc_change + change_30m - eth_change) / 2
-        
-        return {
-            'price_change': change_30m,
-            'vol_growth': vol_growth,
-            'volatility': volatility,
-            'rel_change': rel_change
-        }
-
-
-class TrendStrategy:
-    """趨勢回調策略"""
-    
-    def __init__(self, client: BinanceClient, config: Config):
-        self.client = client
-        self.config = config
-    
-    def check_market_filter(self) -> tuple:
-        for symbol in ["BTCUSDT", "ETHUSDT"]:
-            klines = self.client.get_klines(symbol, "1m", 15)
-            if len(klines) < 15:
-                continue
-            chg = (klines[-1]["close"] - klines[0]["close"]) / klines[0]["close"]
-            if chg <= -0.03:
-                return False, f"{symbol} 15m跌{chg*100:.1f}%"
-        return True, "OK"
-    
-    def check_trend_filter(self, symbol: str) -> tuple:
-        klines = self.client.get_klines(symbol, "1m", 60)
-        if len(klines) < 35:  # 至少需要 35 根 K 線來計算目前 MA30 與 5 根 K 線前的 MA30
-            return False, "K线不足"
-        
-        closes = [k["close"] for k in klines]
-        
-        # MA30 斜率 = (当前MA30 - 5根K线前的MA30) / 5根K线前的MA30 × 100%
-        ma30_c = TechnicalIndicators.sma(closes, 30)
-        # 5根K线前的MA30：用closes[:-5]计算
-        ma30_5_ago = TechnicalIndicators.sma(closes[:-5], 30) if len(closes) > 5 else ma30_c
-        ma30_slope = abs(TechnicalIndicators.ma_slope(ma30_c, ma30_5_ago))
-        
-        # [已優化] 將斜率門檻從 0.15% 調低至 0.05%，提高對微小趨勢的敏感度
-        if ma30_slope < 0.05:
-            return False, f"MA30 斜率{ma30_slope:.3f}%<0.05%"
-        
-        vol_15m = TechnicalIndicators.volatility(klines, 15)
-        # [已優化] 將波動率門檻從 1.0% 大幅調低至 0.1%，適應目前緩漲行情
-        if vol_15m < 0.1:
-            return False, f"波動率{vol_15m:.2f}%<0.1%"
-        
-        crosses = TechnicalIndicators.count_ma_crosses(klines, 5, 10)
-        # [優化 3.0] 放寬震盪過濾：從 3 次提高到 10 次，適應強勢震盪上行行情
-        if crosses >= 10:
-            return False, f"MA交叉{crosses}次>=10"
-        
-        return True, "OK"
-    
-    def identify_trend(self, symbol: str) -> str:
-        klines = self.client.get_klines(symbol, "1m", 60)
-        if len(klines) < 60:
-            return "unknown"
-        
-        closes = [k["close"] for k in klines]
-        ma5, ma10, ma30, ma60 = [TechnicalIndicators.sma(closes, p) for p in [5, 10, 30, 60]]
-        
-        is_up = ma5 > ma10 > ma30 > ma60
-        is_down = ma5 < ma10 < ma30 < ma60
-        
-        if not (is_up or is_down):
-            return "unknown"
-        
-        hh_hl, lh_ll = TechnicalIndicators.hh_hl(klines)
-        
-        if is_up and hh_hl:
-            return "uptrend"
-        elif is_down and lh_ll:
-            return "downtrend"
-        
-        return "unknown"
-    
-    def check_long_entry(self, symbol: str) -> tuple:
-        klines = self.client.get_klines(symbol, "1m", 30)
-        if len(klines) < 15:
-            return False, []
-        
-        closes = [k["close"] for k in klines]
-        volumes = [k["volume"] for k in klines]
-        price = closes[-1]
-        
-        ma5, ma10, ma30 = [TechnicalIndicators.sma(closes, p) for p in [5, 10, 30]]
-        
-        cond = []
-        
-        # 條件 1：價格回調至 MA 附近
-        for ma in [ma5, ma10, ma30]:
-            d = abs(price - ma) / ma * 100
-            if 0.6 <= d <= 1.2:
-                cond.append("near_ma")
-                break
-        
-        # 条件2: 成交量递减
-        if len(volumes) >= 3 and volumes[-1] < volumes[-2] < volumes[-3]:
-            cond.append("vol_down")
-        
-        # 条件3: 阳线站上MA5
-        if klines[-1]["close"] > ma5 and klines[-1]["close"] > klines[-1]["open"]:
-            cond.append("bullish")
-        
-        # 条件4: 未跌破15分钟低点
-        lows = [k["low"] for k in klines[-15:]]
-        if price > min(lows):
-            cond.append("above_low")
-        
-        return len(cond) >= 3, cond
-    
-    def check_short_entry(self, symbol: str) -> tuple:
-        klines = self.client.get_klines(symbol, "1m", 30)
-        if len(klines) < 15:
-            return False, []
-        
-        closes = [k["close"] for k in klines]
-        volumes = [k["volume"] for k in klines]
-        price = closes[-1]
-        
-        ma5, ma10, ma30 = [TechnicalIndicators.sma(closes, p) for p in [5, 10, 30]]
-        
-        cond = []
-        
-        for ma in [ma5, ma10, ma30]:
-            d = abs(price - ma) / ma * 100
-            if 0.6 <= d <= 1.2:
-                cond.append("near_ma")
-                break
-        
-        if len(volumes) >= 3 and volumes[-1] < volumes[-2] < volumes[-3]:
-            cond.append("vol_down")
-        
-        if klines[-1]["close"] < ma5 and klines[-1]["close"] < klines[-1]["open"]:
-            cond.append("bearish")
-        
-        highs = [k["high"] for k in klines[-15:]]
-        if price < max(highs):
-            cond.append("below_high")
-        
-        return len(cond) >= 3, cond
-    
-    def get_leverage(self, symbol: str) -> int:
-        klines = self.client.get_klines(symbol, "1m", 60)
-        if not klines:
-            return 5
-        vol = TechnicalIndicators.volatility(klines, 60)
-        
-        if vol < self.config.low_vol_threshold:
-            return self.config.leverage_low_vol
-        elif vol < self.config.mid_vol_threshold:
-            return self.config.leverage_mid_vol
-        return self.config.leverage_high_vol
-    
-    def calc_sl(self, direction: str, entry: float) -> float:
-        fees = 0.0002 + 0.0005 + 0.001
-        dist = self.config.fixed_loss_pct + fees
-        if direction == "long":
-            return entry * (1 - dist)
-        return entry * (1 + dist)
-    
-    def calc_tp(self, direction: str, entry: float) -> tuple:
-        fees = 0.0002 + 0.0002
-        tp1 = entry * (1 + self.config.first_target_pct - fees)
-        tp2 = entry * (1 + self.config.second_target_pct - fees)
-        if direction == "short":
-            tp1 = entry * (1 - self.config.first_target_pct + fees)
-            tp2 = entry * (1 - self.config.second_target_pct + fees)
-        return tp1, tp2
-    
-    def check_trend_break(self, symbol: str, direction: str) -> bool:
-        klines = self.client.get_klines(symbol, "1m", 15)
-        if len(klines) < 10:
-            return False
-        closes = [k["close"] for k in klines]
-        ma5, ma10 = [TechnicalIndicators.sma(closes, p) for p in [5, 10]]
-        if direction == "long" and ma5 < ma10:
-            return True
-        if direction == "short" and ma5 > ma10:
-            return True
-        return False
-
+        data = self._request("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}) or []
+        return [{"high": float(k[2]), "low": float(k[3]), "close": float(k[4]), "open": float(k[1]), "volume": float(k[5])} for k in data]
+    def place_order(self, symbol: str, side: str, order_type: str, quantity: float = None, price: float = None) -> dict:
+        p = {"symbol": symbol, "side": side, "type": order_type, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
+        if quantity: p["quantity"] = quantity
+        if price: p["price"], p["timeInForce"] = price, "GTC"
+        if DRY_RUN: return {"orderId": 999, "status": "FILLED"}
+        return self._request("/api/v3/order", p, signed=True, method='POST')
 
 class TradingBot:
-    """交易機器人"""
-    
-    def __init__(self, api_key: str = "", secret_key: str = ""):
+    def __init__(self, api_key: str, secret_key: str):
         self.client = BinanceClient(api_key, secret_key)
         self.config = Config()
-        self.load_strategy_config()
-        self.scorer = CoinScorer(self.client)
-        self.strategy = TrendStrategy(self.client, self.config)
-        
-        self.universe = []
-        self.trading_coins = []
-        self.positions = {}
-        self.last_trade = {}
-        self.consecutive_losses = 0
-        self.pause_until = 0
-        self.highest_balance = 0
-        self.last_universe_update = 0
+        self.positions = read_json(POSITIONS_DB, {})
+        self.trading_coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         self.last_events = []
 
-    def load_strategy_config(self) -> None:
-        strategy_v2 = read_json(STRATEGY_V2_FILE, {})
-        if not strategy_v2:
-            return
-
-        self.config.version = strategy_v2.get("version", self.config.version)
-        self.config.top_n = int(strategy_v2.get("topN", self.config.top_n))
-        self.config.max_concurrent_positions = int(strategy_v2.get("position", {}).get("maxConcurrentPositions", self.config.max_concurrent_positions))
-        self.config.position_size_min = float(strategy_v2.get("position", {}).get("sizeMinFraction", self.config.position_size_min))
-        self.config.position_size_max = float(strategy_v2.get("position", {}).get("sizeMaxFraction", self.config.position_size_max))
-        self.config.fixed_loss_pct = float(strategy_v2.get("stopLoss", {}).get("fixedLossPct", self.config.fixed_loss_pct))
-        self.config.first_target_pct = float(strategy_v2.get("takeProfit", {}).get("firstTargetPct", self.config.first_target_pct))
-        self.config.first_target_close_pct = float(strategy_v2.get("takeProfit", {}).get("firstTargetClosePct", self.config.first_target_close_pct))
-        self.config.second_target_pct = float(strategy_v2.get("takeProfit", {}).get("secondTargetPct", self.config.second_target_pct))
-        self.config.leverage_low_vol = int(strategy_v2.get("position", {}).get("leverageVolatilityLow", {}).get("leverage", self.config.leverage_low_vol))
-        self.config.leverage_mid_vol = int(strategy_v2.get("position", {}).get("leverageVolatilityMid", {}).get("leverage", self.config.leverage_mid_vol))
-        self.config.leverage_high_vol = int(strategy_v2.get("position", {}).get("leverageVolatilityHigh", {}).get("leverage", self.config.leverage_high_vol))
-        self.config.low_vol_threshold = float(strategy_v2.get("position", {}).get("leverageVolatilityLow", {}).get("max", self.config.low_vol_threshold))
-        self.config.mid_vol_threshold = float(strategy_v2.get("position", {}).get("leverageVolatilityMid", {}).get("max", self.config.mid_vol_threshold))
-        self.config.cooldown_general = int(strategy_v2.get("cooldown", {}).get("generalMinutes", self.config.cooldown_general / 60) * 60)
-        self.config.cooldown_after_sl = int(strategy_v2.get("cooldown", {}).get("symbolAfterSLMinutes", self.config.cooldown_after_sl / 60) * 60)
-        self.config.limit_order_timeout = int(strategy_v2.get("orders", {}).get("limitOrderTimeoutSeconds", self.config.limit_order_timeout))
-        self.config.time_exit_minutes = int(strategy_v2.get("timeExit", {}).get("maxHoldMinutes", self.config.time_exit_minutes))
-        fixed = strategy_v2.get("coins", [])
-        self.config.fixed_coins = [f"{str(coin).upper().replace('USDT', '')}USDT" for coin in fixed] if fixed else None
-
-    def now_str(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    def add_thought(self, message: str) -> None:
+    def add_thought(self, msg: str):
         thoughts = read_json(THINKING_FILE, [])
-        thoughts.append({"time": self.now_str(), "thought": message})
-        write_json(THINKING_FILE, thoughts[-200:])
+        thoughts.append({"time": datetime.now().strftime("%H:%M:%S"), "thought": msg})
+        write_json(THINKING_FILE, thoughts[-100:])
 
-    def append_trade_record(self, payload: dict[str, Any]) -> None:
+    def append_trade(self, symbol, side, qty, price, pnl, reason):
         trades = read_json(TRADES_FILE, [])
-        trades.append(payload)
-        write_json(TRADES_FILE, trades[-500:])
+        trades.append({"time": datetime.now().strftime("%H:%M:%S"), "type": side, "symbol": symbol.replace("USDT",""), "amount": round(qty, 4), "price": round(price, 2), "pnl": round(pnl, 4), "reason": reason})
+        write_json(TRADES_FILE, trades[-50:])
 
-    def build_open_positions(self) -> tuple[list[dict[str, Any]], float]:
-        open_positions = []
-        total_unrealized = 0.0
-        for symbol, pos in self.positions.items():
-            klines = self.client.get_klines(symbol, "1m", 1)
-            mark_price = klines[-1]["close"] if klines else pos["entry"]
-            qty = float(pos["qty"])
-            if pos["direction"] == "long":
-                unrealized = (mark_price - pos["entry"]) * qty
-            else:
-                unrealized = (pos["entry"] - mark_price) * qty
-            total_unrealized += unrealized
-            open_positions.append({
-                "symbol": symbol,
-                "direction": pos["direction"],
-                "entryPrice": round(float(pos["entry"]), 6),
-                "price": round(float(pos["entry"]), 6),
-                "markPrice": round(float(mark_price), 6),
-                "unrealizedProfit": round(float(unrealized), 4),
-                "leverage": pos["leverage"],
-                "amount": round(qty, 4),
-            })
-        return open_positions, total_unrealized
+    def get_equity(self):
+        acc = self.client._request("/api/v3/account", {"timestamp": int(time.time()*1000)}, signed=True)
+        bal = {b['asset']: float(b['free'])+float(b['locked']) for b in acc.get('balances', [])}
+        eq = bal.get('USDT', 0.0)
+        for a in ['BTC', 'ETH', 'SOL']:
+            if bal.get(a, 0) > 0:
+                p = self.client._request("/api/v3/ticker/price", {"symbol": f"{a}USDT"})
+                eq += bal[a] * float(p.get('price', 0))
+        return eq
 
-    def update_status(self, events: Optional[list[str]] = None, top_signal: Optional[dict[str, Any]] = None) -> None:
-        status = read_json(STATUS_FILE, {})
-        balance = self.get_balance()
-        open_positions, total_unrealized = self.build_open_positions()
-
-        strategy_v2 = read_json(STRATEGY_V2_FILE, {})
-        take_profit = strategy_v2.get("takeProfit", {})
-        stop_loss = strategy_v2.get("stopLoss", {})
-        position = strategy_v2.get("position", {})
-
-        status.update({
-            "last_run": self.now_str(),
-            "balance": round(float(balance), 4),
-            "equity": round(float(balance + total_unrealized), 4),
-            "unrealized_pnl": round(float(total_unrealized), 4),
-            "positions": len(open_positions),
-            "open_positions": open_positions,
-            "mode": "strategy-v2",
-            "watchlist": [symbol.replace("USDT", "") for symbol in self.trading_coins],
-            "top_signal": top_signal or {"symbol": None, "direction": None, "score": None},
-            "events": (events or self.last_events or ["v2 running"])[-8:],
-            "strategy_v2": {
-                "version": "趨勢回調 v3.0 PRO",
-                "takeProfit": f"第一目標 +4% 啟動移動止盈，回落 1% 自動賣出",
-                "stopLoss": f"固定 1.5% + 結構保護",
-                "positionSize": "單筆 30% 重倉模式",
-                "entryLogic": "MA 斜率(0.05%) + 波動率(0.1%) + 10次交叉放寬",
-                "coins": [symbol.replace("USDT", "") for symbol in self.trading_coins],
-            }
-        })
-        write_json(STATUS_FILE, status)
-        self._export_positions()
-
-    def _export_positions(self):
-        try:
-            export_data = {}
-            for sym, pos in self.positions.items():
-                export_data[sym] = {
-                    "max_pnl": pos.get("max_pnl", 0.0)
-                }
-            write_json(BASE_DIR / "dashboard_active_positions.json", export_data)
-        except Exception as e:
-            print(f"導出持倉失敗: {e}")
-
-        status = read_json(STATUS_FILE, {})
-        balance = self.get_balance()
-        open_positions, total_unrealized = self.build_open_positions()
-
-        strategy_v2 = read_json(STRATEGY_V2_FILE, {})
-        take_profit = strategy_v2.get("takeProfit", {})
-        stop_loss = strategy_v2.get("stopLoss", {})
-        position = strategy_v2.get("position", {})
-
-        status.update({
-            "last_run": self.now_str(),
-            "balance": round(float(balance), 4),
-            "equity": round(float(balance + total_unrealized), 4),
-            "unrealized_pnl": round(float(total_unrealized), 4),
-            "positions": len(open_positions),
-            "open_positions": open_positions,
-            "mode": "strategy-v2",
-            "watchlist": [symbol.replace("USDT", "") for symbol in self.trading_coins],
-            "top_signal": top_signal or {"symbol": None, "direction": None, "score": None},
-            "events": (events or self.last_events or ["v2 running"])[-8:],
-            "strategy_v2": {
-                "version": "趨勢回調 v2.0",
-                "takeProfit": f"第一目標 +{take_profit.get('firstTargetPct', 4) * 100:.1f}%賣出 50%，第二目標 +{take_profit.get('secondTargetPct', 8) * 100:.1f}% 全賣",
-                "stopLoss": f"固定{stop_loss.get('fixedLossPct', 1.5) * 100:.1f}% + 結構保護",
-                "leverage": f"低波動{position.get('leverageVolatilityLow', {}).get('leverage', 10)}x / 中波動{position.get('leverageVolatilityMid', {}).get('leverage', 7)}x / 高波動{position.get('leverageVolatilityHigh', {}).get('leverage', 5)}x",
-                "positionSize": f"單筆{position.get('sizeMinFraction', 0.10) * 100:.0f}%-{position.get('sizeMaxFraction', 0.15) * 100:.0f}%倉位，最多{position.get('maxConcurrentPositions', 3)}持倉",
-                "entryLogic": "MA 趨勢判斷 + 4 選 3 回調開倉",
-                "coins": [symbol.replace("USDT", "") for symbol in self.trading_coins],
-                "topN": strategy_v2.get("topN", self.config.top_n),
-            }
-        })
-        write_json(STATUS_FILE, status)
-    
-    def update_universe(self):
-        now = time.time()
-        if not self.universe or now - self.last_universe_update > 600:
-            print("更新幣種列表...")
-            if self.config.fixed_coins:
-                self.universe = self.config.fixed_coins[:]
-                self.trading_coins = self.config.fixed_coins[:self.config.top_n]
-            else:
-                self.universe = self.scorer.get_top_coins(30)
-                self.trading_coins = self.scorer.get_top_scored(self.universe, self.config.top_n)
-            self.last_universe_update = now
-            print(f"交易幣種: {self.trading_coins}")
-            self.add_thought(f"📡 V2 交易池： {' / '.join(symbol.replace('USDT', '') for symbol in self.trading_coins) if self.trading_coins else '暫無'}")
-    
-    def get_total_equity(self) -> float:
-        """以 USDT 計價的總資產：USDT + (持倉幣種 * 現價)
-
-        這是 Spot 模式下做風控（回撤/停手）的正確基礎。
-        """
-        account = self.client.get_account()
-        balances = {b.get("asset"): float(b.get("free", 0)) + float(b.get("locked", 0)) for b in account.get("balances", [])}
-        usdt = balances.get("USDT", 0.0)
-
-        def price(symbol: str) -> float:
-            data = self.client._request("/api/v3/ticker/price", {"symbol": symbol}) or {}
-            try:
-                return float(data.get("price", 0))
-            except Exception:
-                return 0.0
-
-        equity = usdt
-        for asset, symbol in [("BTC", "BTCUSDT"), ("ETH", "ETHUSDT")]:
-            qty = balances.get(asset, 0.0)
-            if qty:
-                equity += qty * price(symbol)
-        return equity
-
-    def get_balance(self) -> float:
-        """保留舊介面名稱，但改成回傳 Spot 的總資產（equity）。"""
-        return self.get_total_equity()
-
-    def has_existing_holding(self, symbol: str, min_notional_usdt: float = 5.0) -> bool:
-        """檢查帳戶是否已持有該現貨（含 free+locked）。"""
-        asset = symbol.replace("USDT", "")
-        account = self.client.get_account()
-        qty = 0.0
-        for b in account.get("balances", []):
-            if b.get("asset") == asset:
-                qty = float(b.get("free", 0)) + float(b.get("locked", 0))
-                break
-        if qty <= 0:
-            return False
-        px = self.client._request("/api/v3/ticker/price", {"symbol": symbol}) or {}
-        try:
-            notional = qty * float(px.get("price", 0))
-        except Exception:
-            notional = 0.0
-        return notional >= min_notional_usdt
-    
-    def is_paused(self) -> bool:
-        now = time.time()
-        if now < self.pause_until:
-            print(f"暂停中，剩余{int(self.pause_until-now)}秒")
-            return True
-
-        # 以「總資產」計算回撤（Spot 正確）
-        max_dd = float(os.getenv("MAX_DRAWDOWN_PCT", "0.03"))  # 例如 0.03 = 3%
-        if self.highest_balance > 0:
-            bal = self.get_balance()
-            dd = (self.highest_balance - bal) / self.highest_balance
-            if dd >= max_dd:
-                print(f"回撤{dd*100:.2f}%，觸發停手機制 (max {max_dd*100:.2f}%)")
-                self.pause_until = now + 86400
-                return True
-        return False
-    
-    def open_position(self, symbol: str, direction: str) -> bool:
-        now = time.time()
-        
-        # 冷却
-        if symbol in self.last_trade:
-            cd = self.config.cooldown_after_sl if symbol in self.positions else self.config.cooldown_general
-            if now - self.last_trade[symbol] < cd:
-                return False
-        
-        if len(self.positions) >= self.config.max_concurrent_positions:
-            return False
-        if symbol in self.positions:
-            return False
-        # [已放寬] 允許在已有現貨持倉的情況下繼續根據策略開新倉
-        # if self.has_existing_holding(symbol):
-        #     self.add_thought(f"🧾 {symbol} 已有既有持倉，跳過新開倉")
-        #     return False
-        
-        bal = self.get_balance()
-        if bal < 10:
-            return False
-        
-        klines = self.client.get_klines(symbol, "1m", 1)
-        if not klines:
-            return False
-        
-        price = klines[-1]["close"]
-        lev = self.strategy.get_leverage(symbol)
-        size = bal * self.config.position_size_min * lev / price
-        
-        offset = 0.0005
-        if direction == "long":
-            order_price = price * (1 - offset)
-            side = "BUY"
-        else:
-            order_price = price * (1 + offset)
-            side = "SELL"
-        
-        try:
-            result = self.client.place_order(symbol, side, "LIMIT", size, order_price)
-            if result.get("orderId"):
-                self.positions[symbol] = {
-                    "direction": direction,
-                    "entry": order_price,
-                    "qty": size,
-                    "leverage": lev,
-                    "open_time": now,
-                }
-                self.last_trade[symbol] = now
-                print(f"{symbol} 开{'多' if direction=='long' else '空'}成功")
-                self.append_trade_record({
-                    "time": self.now_str(),
-                    "type": "BUY" if direction == "long" else "SELL",
-                    "symbol": symbol,
-                    "amount": round(float(size), 4),
-                    "price": round(float(order_price), 6),
-                    "pnl": 0.0,
-                    "reason": "趋势回調v2開倉",
-                    "balance": round(float(self.get_balance()), 4),
-                    "leverage": lev,
-                    "direction": direction,
-                    "tradeAction": "OPEN",
-                })
-                self.add_thought(f"🎯 {symbol} {'做多' if direction == 'long' else '做空'} 開倉 {order_price:.4f}")
-                return True
-        except Exception as e:
-            print(f"開倉失败: {e}")
-        return False
-
-    def close_position(self, symbol: str, reason: str):
-        if symbol not in self.positions:
-            return
-        pos = self.positions[symbol]
-        side = "SELL" if pos["direction"] == "long" else "BUY"
-        
-        try:
-            klines = self.client.get_klines(symbol, "1m", 1)
-            close_price = klines[-1]["close"] if klines else pos["entry"]
-            self.client.place_order(symbol, side, "MARKET", pos["qty"], reduce_only=True)
-            realized = (close_price - pos["entry"]) * pos["qty"] if pos["direction"] == "long" else (pos["entry"] - close_price) * pos["qty"]
-            self.append_trade_record({
-                "time": self.now_str(),
-                "type": "SELL" if pos["direction"] == "long" else "BUY",
-                "symbol": symbol,
-                "amount": round(float(pos["qty"]), 4),
-                "price": round(float(close_price), 6),
-                "pnl": round(float(realized), 4),
-                "reason": f"趋势回調v2平倉: {reason}",
-                "balance": round(float(self.get_balance()), 4),
-                "leverage": pos["leverage"],
-                "direction": pos["direction"],
-                "tradeAction": "CLOSE",
-            })
-            del self.positions[symbol]
-            print(f"{symbol} 平倉: {reason}")
-            self.add_thought(f"🧾 {symbol} 平倉 {reason}")
-            if reason in ["stop_loss", "time_exit"]:
-                self.consecutive_losses += 1
-        except Exception as e:
-            print(f"平倉失败: {e}")
-    
     def check_positions(self):
         now = time.time()
-        
-        # [優化 3.0] 強制接管邏輯：將帳戶中的現貨自動納入機器人監控名單
-        try:
-            all_holdings = self.get_all_holdings()
-            for h in all_holdings:
-                symbol = h['symbol']
-                # 發現未被監控的現貨，強制領養
-                if symbol in self.trading_coins and symbol not in self.positions:
-                    current_pnl = 0.0
-                    try:
-                        # 抓個即時價來算初始 PnL，避免 max_pnl 從 0 開始導致誤判
-                        ticker = self.client._request(f"/api/v3/ticker/price?symbol={symbol}")
-                        if ticker:
-                            cur_p = float(ticker['price'])
-                            current_pnl = (cur_p - h['avgBuyPrice']) / h['avgBuyPrice']
-                    except: pass
-
-                    self.positions[symbol] = {
-                        "symbol": symbol,
-                        "direction": "long",
-                        "entry": h['avgBuyPrice'],
-                        "qty": h['quantity'],
-                        "open_time": now,
-                        "max_pnl": max(current_pnl, 0.0)
-                    }
-                    self.add_thought(f"📥 接管持倉: {symbol} (當前PnL: {current_pnl*100:.2f}%)")
-        except:
-            pass
-
         for symbol, pos in list(self.positions.items()):
-            # 趨勢破壞
-            if self.strategy.check_trend_break(symbol, pos["direction"]):
-                self.close_position(symbol, "trend_break")
-                continue
-            
-            # 超时
-            hold_mins = (now - pos["open_time"]) / 60
-            if hold_mins >= self.config.time_exit_minutes:
-                self.close_position(symbol, "time_exit")
-                continue
-            
-            # 價格檢查
             klines = self.client.get_klines(symbol, "1m", 1)
-            if not klines:
-                continue
+            if not klines: continue
             price = klines[-1]["close"]
-            entry = pos["entry"]
-            d = pos["direction"]
-            
-            pnl = (price - entry) / entry if d == "long" else (entry - price) / entry
-            
-            # [優化 3.0] 移動止盈 (Trailing Stop) 邏輯
-            if "max_pnl" not in pos:
-                pos["max_pnl"] = pnl
-            else:
-                pos["max_pnl"] = max(pos["max_pnl"], pnl)
-            
-            # 如果獲利達到啟動門檻 (4%)，開始監控回落
+            pnl = (price - pos["entry"]) / pos["entry"]
+            pos["max_pnl"] = max(pos.get("max_pnl", 0), pnl)
             if pos["max_pnl"] >= self.config.trailing_stop_activation_pct:
-                # 如果從最高獲利點回落超過設定的 1%，則平倉
                 if (pos["max_pnl"] - pnl) >= self.config.trailing_stop_callback_pct:
-                    self.close_position(symbol, f"trailing_stop (High:{pos['max_pnl']*100:.1f}%)")
-                    continue
+                    self.close_pos(symbol, f"移動止盈回落 (高點:{pos['max_pnl']*100:.1f}%)")
+            elif pnl <= -self.config.fixed_loss_pct:
+                self.close_pos(symbol, "固定止損")
 
-            # 止損
-            sl = self.strategy.calc_sl(d, entry)
-            if (d == "long" and price <= sl) or (d == "short" and price >= sl):
-                self.close_position(symbol, "stop_loss")
-                continue
-            
-            # 止盈
-            tp1, tp2 = self.strategy.calc_tp(d, entry)
-            if pnl >= self.config.second_target_pct:
-                self.close_position(symbol, "tp2")
-            elif pnl >= self.config.first_target_pct and "tp1_triggered" not in pos:
-                pos["tp1_triggered"] = True
-                # 部分平倉
-                qty = pos["qty"] * 0.5
-                side = "SELL" if d == "long" else "BUY"
-                try:
-                    self.client.place_order(symbol, side, "MARKET", qty, reduce_only=True)
-                    pos["qty"] *= 0.5
-                    pos["entry"] = price  # 止損移至成本
-                except:
-                    pass
-    
-    def scan_and_trade(self) -> tuple[list[str], Optional[dict[str, Any]]]:
-        events = []
-        top_signal = None
-        self.update_universe()
-        
-        ok, reason = self.strategy.check_market_filter()
-        if not ok:
-            events.append(reason)
-            self.add_thought(f"⛔ 市场过滤: {reason}")
-            return events, top_signal
-        
+    def close_pos(self, symbol, reason):
+        pos = self.positions.get(symbol)
+        if not pos: return
+        qty = float(pos["qty"])
+        if "BTC" in symbol: qty = math.floor(qty * 100000) / 100000
+        elif "ETH" in symbol: qty = math.floor(qty * 10000) / 10000
+        res = self.client.place_order(symbol, "SELL", "MARKET", quantity=qty)
+        if res.get("orderId") or res.get("status") == "FILLED":
+            p = float(self.client.get_klines(symbol, "1m", 1)[-1]["close"])
+            self.append_trade(symbol, "賣出", qty, p, (p-pos["entry"])*qty, reason)
+            del self.positions[symbol]
+            self.add_thought(f"🧾 {symbol} 平倉: {reason}")
+            write_json(POSITIONS_DB, self.positions)
+
+    def scan_and_trade(self):
         for symbol in self.trading_coins:
-            ok, reason = self.strategy.check_trend_filter(symbol)
-            if not ok:
-                events.append(f"{symbol.replace('USDT', '')}: {reason}")
-                continue
+            if symbol in self.positions: continue
+            klines = self.client.get_klines(symbol, "1m", 30)
+            if len(klines) < 30: continue
+            closes = [k["close"] for k in klines]
+            ma30 = sum(closes)/30
+            ma30_old = sum(closes[:-5])/30
+            slope = (ma30 - ma30_old)/ma30_old * 100
             
-            trend = self.strategy.identify_trend(symbol)
-            if top_signal is None:
-                top_signal = {
-                    "symbol": symbol,
-                    "direction": "long" if trend == "uptrend" else "short" if trend == "downtrend" else None,
-                    "score": None,
-                }
+            # 激進進場 4選2
+            cond = []
+            if abs(closes[-1] - ma30)/ma30*100 <= 1.2: cond.append("near_ma")
+            if klines[-1]["close"] > klines[-1]["open"]: cond.append("bullish")
+            if klines[-1]["volume"] < klines[-2]["volume"]: cond.append("vol_down")
+            if closes[-1] > min([k["low"] for k in klines[-15:]]): cond.append("above_low")
             
-            if trend == "uptrend":
-                ok, cond = self.strategy.check_long_entry(symbol)
-                if ok:
-                    print(f"{symbol} 多单信号")
-                    events.append(f"{symbol.replace('USDT', '')} 做多 {'/'.join(cond)}")
-                    self.add_thought(f"📈 {symbol} 做多訊號 {' / '.join(cond)}")
-                    self.open_position(symbol, "long")
-            
-            elif trend == "downtrend":
-                # Spot 保守模式：不做空
-                continue
-        return events, top_signal
-    
-    def update_strategy_display(self):
-        self.update_status()
+            if slope >= self.config.ma30_slope_min and len(cond) >= 2:
+                bal = self.get_equity()
+                qty = (bal * self.config.position_size_min) / closes[-1]
+                res = self.client.place_order(symbol, "BUY", "MARKET", quantity=round(qty, 5))
+                if res.get("orderId"):
+                    self.positions[symbol] = {"entry": closes[-1], "qty": qty, "open_time": time.time(), "max_pnl": 0}
+                    self.append_trade(symbol, "買入", qty, closes[-1], 0, "趨勢進場")
+                    self.add_thought(f"🎯 {symbol} 買入成功 (條件:{'/'.join(cond)})")
+                    write_json(POSITIONS_DB, self.positions)
 
-    def tick(self) -> None:
-        events = [f"V2 掃描 {datetime.now().strftime('%H:%M:%S')}"]
+    def tick(self):
         self.add_thought(f"🔄 V2 掃描 {datetime.now().strftime('%H:%M:%S')}")
         self.check_positions()
-        scan_events, top_signal = self.scan_and_trade()
-        events.extend(scan_events)
-        if len(events) == 1:
-            events.append("no candidate")
-            self.add_thought("😴 V2没有可执行信号，等待下一轮")
-        self.last_events = events[-8:]
-        bal = self.get_balance()
-        if bal > self.highest_balance:
-            self.highest_balance = bal
-        self.update_status(events=self.last_events, top_signal=top_signal)
-        self._export_positions()
-    
+        self.scan_and_trade()
+        status = {"last_run": datetime.now().strftime("%H:%M:%S"), "balance": round(self.get_equity(), 2), "positions": len(self.positions)}
+        write_json(STATUS_FILE, status)
+        write_json(BASE_DIR / "dashboard_active_positions.json", {s: {"max_pnl": p["max_pnl"]} for s, p in self.positions.items()})
+
     def run(self):
-        print("=" * 50)
-        print("趨勢回調策略 v2.0 启动")
-        print("=" * 50)
-        
-        self.highest_balance = self.get_balance()
-
-        tick_seconds = int(os.getenv("TICK_SECONDS", "300"))  # 保守預設：5 分鐘一次
-
+        print("LOBSTER v3.0.2 PRO RUNNING")
         while True:
-            try:
-                if self.is_paused():
-                    self.update_status(events=["paused"])
-                    time.sleep(tick_seconds)
-                    continue
-
-                self.tick()
-                time.sleep(tick_seconds)
-                
-            except KeyboardInterrupt:
-                print("\n停止")
-                break
-            except Exception as e:
-                print(f"错误: {e}")
-                time.sleep(tick_seconds)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("cmd", choices=["run", "status", "run-once"])
-    args = parser.parse_args()
-
-    ensure_credentials()
-    api_key = os.getenv("BINANCE_API_KEY", "")
-    secret_key = os.getenv("BINANCE_SECRET_KEY", "")
-    
-    bot = TradingBot(api_key, secret_key)
-    
-    if args.cmd == "run":
-        bot.run()
-    elif args.cmd == "run-once":
-        bot.highest_balance = bot.get_balance()
-        bot.tick()
-    elif args.cmd == "status":
-        print(f"余额: {bot.get_balance()}")
-        print(f"持倉: {bot.positions}")
-
+            try: self.tick(); time.sleep(30)
+            except KeyboardInterrupt: break
+            except Exception as e: print(f"Error: {e}"); time.sleep(30)
 
 if __name__ == "__main__":
-    main()
+    load_env()
+    api_key = os.getenv("BINANCE_API_KEY")
+    secret_key = os.getenv("BINANCE_SECRET_KEY")
+    if not api_key or not secret_key:
+        print("Error: BINANCE_API_KEY or BINANCE_SECRET_KEY not found in .env")
+        sys.exit(1)
+    bot = TradingBot(api_key, secret_key)
+    bot.run()
