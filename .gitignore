@@ -7,9 +7,11 @@ thinking.json
 trades.json
 dashboard_meta.json
 dashboard_holdings.json
+dashboard_assets.json
+dashboard_orders.json
+dashboard_active_positions.json
+positions_v2.json
+live_trading_window.json
 .cf-pages-release/
 *.pid
 *.bak
-dashboard_assets.json
-dashboard_orders.json
-live_trading_window.json

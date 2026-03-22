@@ -44,8 +44,15 @@
         .m-value { font-family: 'Orbitron', sans-serif; font-size: 1.6rem; margin-top: 5px; }
         
         .main-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 15px; }
+        .full-width-section { margin-bottom: 15px; }
         .pos-panel { min-height: 400px; position: relative; }
         .trailing-box { margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 15px; border-left: 4px solid var(--warning); }
+        .chart-card { margin-bottom: 15px; }
+        .chart-wrap { position: relative; height: 300px; margin-top: 10px; }
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: rgba(255,255,255,0.75); }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .chart-note { font-size: 0.72rem; color: rgba(160, 181, 214, 0.72); margin-top: 8px; }
         
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.85rem; }
         th { text-align: left; color: rgba(160, 181, 214, 0.6); padding-bottom: 10px; border-bottom: 1px solid var(--border); }
@@ -91,6 +98,15 @@
         </div>
     </section>
 
+    <section class="shell-card chart-card full-width-section">
+        <h3 style="font-family:'Orbitron'; margin-bottom:10px; font-size:0.9rem;">📈 目前持幣 7D 即時曲線</h3>
+        <div class="chart-note">只顯示目前持有的幣種，會跟著最新價格即時更新。</div>
+        <div class="chart-wrap">
+            <canvas id="portfolioChart"></canvas>
+        </div>
+        <div class="chart-legend" id="chartLegend"></div>
+    </section>
+
     <main class="main-layout">
         <div class="left-col">
             <section class="shell-card pos-panel">
@@ -120,6 +136,10 @@
         let prices = {};
         let holdings = [];
         let assets = {};
+        let portfolioChart = null;
+        let chartSeries = {};
+        let chartLabels = [];
+        const chartColors = ['#33d7ff', '#00f7b2', '#ffcc00', '#ff5f7c', '#9b7bff'];
         // [優化 3.0] 使用本地對象來永久鎖定本次 Session 的最高獲利點
         let localMaxCache = {}; 
 
@@ -145,15 +165,150 @@
                 fetch(`thinking.json?t=${bust}`).then(r => r.json()),
                 fetch(`dashboard_active_positions.json?t=${bust}`).then(r => r.json()).catch(() => ({}))
             ]);
+            const oldSymbols = (holdings || []).map(h => h.symbol).sort().join(',');
             holdings = hRes.holdings || [];
             assets = aRes;
             activePositions = apRes;
             updateTables(tRes, thRes);
+            const newSymbols = holdings.map(h => h.symbol).sort().join(',');
+            if (oldSymbols !== newSymbols || !chartLabels.length) {
+                await refreshPortfolioChart();
+            } else {
+                updateLiveChartPrices();
+            }
+        }
+
+        async function loadKlines(symbol) {
+            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=42`);
+            const data = await res.json();
+            return (data || []).map(k => ({
+                time: new Date(k[0]).toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric' }),
+                close: parseFloat(k[4])
+            }));
+        }
+
+        function renderChartLegend() {
+            const legend = document.getElementById('chartLegend');
+            if (!legend) return;
+            legend.innerHTML = holdings.map((h, idx) => {
+                const currentPrice = prices[h.symbol] || chartSeries[h.symbol]?.at(-1) || h.avgBuyPrice;
+                const basePrice = chartSeries[h.symbol]?.[0] || currentPrice || 1;
+                const perf = ((currentPrice - basePrice) / basePrice) * 100;
+                const color = chartColors[idx % chartColors.length];
+                return `
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background:${color}"></span>
+                        <span>${h.asset} ${currentPrice.toFixed(2)} <span class="${perf >= 0 ? 'positive' : 'negative'}">${perf >= 0 ? '+' : ''}${perf.toFixed(2)}%</span></span>
+                    </div>
+                `;
+            }).join('') || '<div class="chart-note">目前無持倉，暫無曲線。</div>';
+        }
+
+        async function refreshPortfolioChart() {
+            const activeHoldings = holdings.filter(h => h.quantity > 0);
+            const canvas = document.getElementById('portfolioChart');
+            if (!canvas) return;
+            if (!activeHoldings.length) {
+                if (portfolioChart) {
+                    portfolioChart.destroy();
+                    portfolioChart = null;
+                }
+                chartSeries = {};
+                chartLabels = [];
+                renderChartLegend();
+                return;
+            }
+
+            const seriesList = await Promise.all(activeHoldings.map(h => loadKlines(h.symbol).catch(() => [])));
+            chartSeries = {};
+            chartLabels = seriesList[0]?.map(p => p.time) || [];
+
+            const datasets = activeHoldings.map((h, idx) => {
+                const points = seriesList[idx] || [];
+                chartSeries[h.symbol] = points.map(p => p.close);
+                const basePrice = chartSeries[h.symbol][0] || 1;
+                const normalized = chartSeries[h.symbol].map(v => ((v - basePrice) / basePrice) * 100);
+                const color = chartColors[idx % chartColors.length];
+                return {
+                    label: h.asset,
+                    data: normalized,
+                    borderColor: color,
+                    backgroundColor: color + '22',
+                    borderWidth: 2,
+                    tension: 0.25,
+                    pointRadius: 0,
+                    pointHoverRadius: 3
+                };
+            });
+
+            if (portfolioChart) portfolioChart.destroy();
+            portfolioChart = new Chart(canvas, {
+                type: 'line',
+                data: { labels: chartLabels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}%`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: 'rgba(255,255,255,0.55)', maxTicksLimit: 7 },
+                            grid: { color: 'rgba(255,255,255,0.04)' }
+                        },
+                        y: {
+                            ticks: {
+                                color: 'rgba(255,255,255,0.55)',
+                                callback: (value) => `${value}%`
+                            },
+                            grid: { color: 'rgba(255,255,255,0.06)' }
+                        }
+                    }
+                }
+            });
+            renderChartLegend();
+        }
+
+        function updateLiveChartPrices() {
+            if (!portfolioChart) {
+                renderChartLegend();
+                return;
+            }
+            let changed = false;
+            portfolioChart.data.datasets.forEach(ds => {
+                const symbol = `${ds.label}USDT`;
+                if (!chartSeries[symbol]?.length || !prices[symbol]) return;
+                const rawData = [...chartSeries[symbol]];
+                rawData[rawData.length - 1] = prices[symbol];
+                const basePrice = rawData[0] || 1;
+                ds.data = rawData.map(v => ((v - basePrice) / basePrice) * 100);
+                changed = true;
+            });
+            if (changed) portfolioChart.update('none');
+            renderChartLegend();
         }
 
         function renderUI() {
             let totalInvested = 0;
             let totalUnrealizedPnl = 0;
+            
+            // 清理已平倉的本地高點紀錄
+            const activeSymbols = holdings.map(h => h.symbol);
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key.startsWith('max_')) {
+                    const sym = key.replace('max_', '');
+                    if (!activeSymbols.includes(sym)) {
+                        localStorage.removeItem(key);
+                    }
+                }
+            }
             
             const holdingHtml = holdings.map(h => {
                 const currentPrice = prices[h.symbol] || h.avgBuyPrice;
@@ -172,9 +327,18 @@
                 
                 // [優化 3.0.1 PRO] 真·前端本地高點鎖定 - 使用 LocalStorage 永久鎖定
                 let savedLocalMax = parseFloat(localStorage.getItem(`max_${h.symbol}`) || "0");
+                let savedEntry = localStorage.getItem(`entry_${h.symbol}`) || "0";
                 
+                // 如果後台回傳的買入成本變了，代表是新的一單，立刻清空舊紀錄
+                const backendEntry = (activePositions[h.symbol] && activePositions[h.symbol].entry) || h.avgBuyPrice;
+                if (Math.abs(parseFloat(savedEntry) - backendEntry) > 0.0001) {
+                    savedLocalMax = 0;
+                    localStorage.setItem(`max_${h.symbol}`, "0");
+                    localStorage.setItem(`entry_${h.symbol}`, backendEntry.toString());
+                }
+
                 // 取 目前損益、後台紀錄、本地紀錄 三者之中的「絕對最高點」
-                const realMaxPnl = Math.max(pnlPct, backendMaxPnl, savedLocalMax);
+                const realMaxPnl = Math.max(pnlPct, (activePositions[h.symbol]?.max_pnl || 0) * 100, savedLocalMax);
                 
                 // 只要一創新高，就立刻寫入 LocalStorage 永久鎖定
                 if (realMaxPnl > savedLocalMax) {
@@ -220,15 +384,27 @@
             const pnlEl = document.getElementById('totalPnl');
             pnlEl.textContent = (totalUnrealizedPnl >= 0 ? '+' : '') + totalUnrealizedPnl.toFixed(2) + ' USDT';
             pnlEl.className = 'm-value ' + (totalUnrealizedPnl >= 0 ? 'positive' : 'negative');
+            updateLiveChartPrices();
+        }
+
+        function formatTradeTime(rawTime) {
+            if (!rawTime) return '--';
+            if (typeof rawTime !== 'string') return String(rawTime);
+            // 已經是 HH:MM 或 HH:MM:SS 就直接顯示
+            if (/^\d{2}:\d{2}(:\d{2})?$/.test(rawTime)) return rawTime;
+            // 若是 ISO / 完整日期字串，取最後的時間部分
+            const match = rawTime.match(/(\d{2}:\d{2}:\d{2})/);
+            if (match) return match[1];
+            return rawTime;
         }
 
         function updateTables(trades, thoughts) {
             const tBody = document.querySelector('#tradeList tbody');
             tBody.innerHTML = trades.slice(-5).reverse().map(t => `
                 <tr>
-                    <td>${t.time.substring(11)}</td>
+                    <td>${formatTradeTime(t.time)}</td>
                     <td style="font-weight:bold; color:var(--cyan);">${t.symbol.replace('USDT','')}</td>
-                    <td class="${t.type==='BUY'?'positive':'negative'}">${t.type==='BUY'?'買入':'賣出'}</td>
+                    <td class="${(t.type==='BUY'||t.type==='買入')?'positive':'negative'}">${(t.type==='BUY'||t.type==='買入')?'買入':'賣出'}</td>
                     <td>${t.price.toFixed(2)}</td>
                     <td class="${t.pnl>=0?'positive':'negative'}">${t.pnl.toFixed(2)}</td>
                 </tr>
