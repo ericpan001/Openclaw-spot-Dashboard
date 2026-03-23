@@ -400,15 +400,20 @@
 
         function updateTables(trades, thoughts) {
             const tBody = document.querySelector('#tradeList tbody');
-            tBody.innerHTML = trades.slice(-5).reverse().map(t => `
+            tBody.innerHTML = trades.slice(-5).reverse().map(t => {
+                const isBuy = (t.type==='BUY'||t.type==='買入');
+                const tag = t.isManualSync || t.syncSource === 'binance-myTrades'
+                    ? '<span class="trade-tag manual">手動同步</span>'
+                    : '<span class="trade-tag bot">策略</span>';
+                return `
                 <tr>
                     <td>${formatTradeTime(t.time)}</td>
-                    <td style="font-weight:bold; color:var(--cyan);">${t.symbol.replace('USDT','')}</td>
-                    <td class="${(t.type==='BUY'||t.type==='買入')?'positive':'negative'}">${(t.type==='BUY'||t.type==='買入')?'買入':'賣出'}</td>
-                    <td>${t.price.toFixed(2)}</td>
-                    <td class="${t.pnl>=0?'positive':'negative'}">${t.pnl.toFixed(2)}</td>
+                    <td style="font-weight:bold; color:var(--cyan);">${t.symbol.replace('USDT','')}${tag}</td>
+                    <td class="${isBuy?'positive':'negative'}">${isBuy?'買入':'賣出'}</td>
+                    <td>${Number(t.price).toFixed(2)}</td>
+                    <td class="${Number(t.pnl)>=0?'positive':'negative'}">${Number(t.pnl).toFixed(2)}</td>
                 </tr>
-            `).join('');
+            `}).join('');
 
             const thinkArea = document.getElementById('thinkArea');
             thinkArea.innerHTML = thoughts.slice(-15).reverse().map(th => `
@@ -420,6 +425,12 @@
         }
 
         initWebSocket();
+        setInterval(fetchBaseData, 3000);
+        fetchBaseData();
+    </script>
+</body>
+</html>
+nitWebSocket();
         setInterval(fetchBaseData, 3000);
         fetchBaseData();
     </script>

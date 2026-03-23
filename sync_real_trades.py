@@ -59,6 +59,18 @@ def trade_key(t):
     return f"{t.get('time')}|{t.get('symbol')}|{t.get('type')}|{t.get('amount')}|{t.get('price')}|{t.get('reason','')}"
 
 
+def is_recent_trade(t):
+    try:
+        raw_time = t.get('time', '')
+        if len(raw_time) == 8 and raw_time.count(':') == 2:
+            return True
+        dt = datetime.strptime(raw_time, '%Y-%m-%d %H:%M:%S').replace(tzinfo=TZ_TAIPEI)
+        age = datetime.now(TZ_TAIPEI) - dt
+        return age.total_seconds() <= KEEP_HOURS * 3600
+    except Exception:
+        return True
+
+
 def normalize_trade(raw, live_price):
     dt = datetime.fromtimestamp(raw['time'] / 1000, tz=timezone.utc).astimezone(TZ_TAIPEI)
     symbol = raw['symbol']
