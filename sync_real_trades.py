@@ -9,6 +9,8 @@ OUT = BASE_DIR / 'trades.json'
 STATE = BASE_DIR / 'trade_sync_state.json'
 SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 TZ_TAIPEI = timezone(timedelta(hours=8))
+KEEP_HOURS = 48
+MAX_TRADES = 80
 
 if ENV_FILE.exists():
     for line in ENV_FILE.read_text().splitlines():
@@ -56,7 +58,23 @@ def get_price(symbol):
 
 
 def trade_key(t):
-    return f"{t.get('time')}|{t.get('symbol')}|{t.get('type')}|{t.get('amount')}|{t.get('price')}|{t.get('reason','')}"
+    base_id = t.get('orderId') or t.get('tradeId') or 0
+    return f"{base_id}|{t.get('symbol')}|{t.get('type')}|{t.get('amount')}|{t.get('price')}|{t.get('reason','')}"
+
+
+def sort_key(t):
+    if t.get('orderId') is not None:
+        return int(t.get('orderId', 0))
+    if t.get('tradeId') is not None:
+        return int(t.get('tradeId', 0))
+    raw_time = str(t.get('time', ''))
+    try:
+        if len(raw_time) == 8 and raw_time.count(':') == 2:
+            h, m, s = map(int, raw_time.split(':'))
+            return h * 3600 + m * 60 + s
+    except Exception:
+        pass
+    return 0
 
 
 def is_recent_trade(t):
@@ -82,15 +100,43 @@ def normalize_trade(raw, live_price):
         'time': dt.strftime('%H:%M:%S'),
         'symbol': symbol.replace('USDT', ''),
         'type': side,
-        'amount': round(qty, 4),
-        'price': round(price, 2),
-        'pnl': round(pnl, 4),
+        'amount': qty,
+        'price': price,
+        'pnl': pnl,
         'reason': 'Binance 手動/真實成交同步',
         'tradeId': raw.get('id'),
         'orderId': raw.get('orderId'),
         'tradeAction': 'OPEN' if raw.get('isBuyer') else 'CLOSE',
-        'syncSource': 'binance-myTrades'
+        'syncSource': 'binance-myTrades',
+        'isManualSync': True
     }
+
+
+def aggregate_trades(trades):
+    grouped = {}
+    for t in trades:
+        key = (t.get('orderId') or t.get('tradeId'), t.get('symbol'), t.get('type'), t.get('reason'))
+        if key not in grouped:
+            grouped[key] = dict(t)
+            continue
+        g = grouped[key]
+        old_amt = float(g.get('amount', 0))
+        new_amt = float(t.get('amount', 0))
+        total_amt = old_amt + new_amt
+        if total_amt > 0:
+            g['price'] = ((float(g.get('price', 0)) * old_amt) + (float(t.get('price', 0)) * new_amt)) / total_amt
+        g['amount'] = total_amt
+        g['pnl'] = float(g.get('pnl', 0)) + float(t.get('pnl', 0))
+        if int(t.get('tradeId') or 0) > int(g.get('tradeId') or 0):
+            g['tradeId'] = t.get('tradeId')
+            g['time'] = t.get('time')
+    out = []
+    for g in grouped.values():
+        g['amount'] = round(float(g.get('amount', 0)), 4)
+        g['price'] = round(float(g.get('price', 0)), 2)
+        g['pnl'] = round(float(g.get('pnl', 0)), 4)
+        out.append(g)
+    return out
 
 
 def sync_once():
@@ -99,7 +145,6 @@ def sync_once():
 
     state = read_json(STATE, {})
     existing = read_json(OUT, [])
-    existing_keys = {trade_key(t) for t in existing}
     merged = list(existing)
     changed = False
 
@@ -117,19 +162,23 @@ def sync_once():
             max_seen = last_id
             for raw in trades:
                 max_seen = max(max_seen, int(raw.get('id', 0)))
-                norm = normalize_trade(raw, live_price)
-                key = trade_key(norm)
-                if key not in existing_keys:
-                    merged.append(norm)
-                    existing_keys.add(key)
-                    changed = True
+                merged.append(normalize_trade(raw, live_price))
+                changed = True
             state[symbol] = max_seen
         except urllib.error.HTTPError as e:
             print(f'sync {symbol} HTTP error: {e.code} {e.reason}')
         except Exception as e:
             print(f'sync {symbol} failed: {e}')
 
-    merged = merged[-80:]
+    merged = [t for t in merged if is_recent_trade(t)]
+    merged = aggregate_trades(merged)
+    # de-dup after aggregation
+    dedup = {}
+    for t in merged:
+        dedup[trade_key(t)] = t
+    merged = list(dedup.values())
+    merged.sort(key=sort_key)
+    merged = merged[-MAX_TRADES:]
     if changed:
         write_json(OUT, merged)
     write_json(STATE, state)

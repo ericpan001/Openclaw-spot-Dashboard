@@ -398,9 +398,18 @@
             return rawTime;
         }
 
+        function tradeSortValue(t) {
+            if (t.tradeId !== undefined && t.tradeId !== null) return Number(t.tradeId) || 0;
+            const raw = String(t.time || '');
+            const m = raw.match(/(\d{2}):(\d{2}):(\d{2})/);
+            if (!m) return 0;
+            return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+        }
+
         function updateTables(trades, thoughts) {
             const tBody = document.querySelector('#tradeList tbody');
-            tBody.innerHTML = trades.slice(-5).reverse().map(t => {
+            const sortedTrades = [...trades].sort((a, b) => tradeSortValue(b) - tradeSortValue(a));
+            tBody.innerHTML = sortedTrades.slice(0, 5).map(t => {
                 const isBuy = (t.type==='BUY'||t.type==='買入');
                 const tag = t.isManualSync || t.syncSource === 'binance-myTrades'
                     ? '<span class="trade-tag manual">手動同步</span>'
@@ -425,12 +434,6 @@
         }
 
         initWebSocket();
-        setInterval(fetchBaseData, 3000);
-        fetchBaseData();
-    </script>
-</body>
-</html>
-nitWebSocket();
         setInterval(fetchBaseData, 3000);
         fetchBaseData();
     </script>
