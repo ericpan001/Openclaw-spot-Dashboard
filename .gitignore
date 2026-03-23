@@ -11,6 +11,7 @@ dashboard_assets.json
 dashboard_orders.json
 dashboard_active_positions.json
 positions_v2.json
+trade_sync_state.json
 live_trading_window.json
 .cf-pages-release/
 *.pid
