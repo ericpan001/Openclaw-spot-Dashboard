@@ -408,7 +408,13 @@
 
         function updateTables(trades, thoughts) {
             const tBody = document.querySelector('#tradeList tbody');
-            const sortedTrades = [...trades].sort((a, b) => tradeSortValue(b) - tradeSortValue(a));
+            const sortedTrades = [...trades]
+                .sort((a, b) => tradeSortValue(b) - tradeSortValue(a))
+                .filter((t, i, arr) => i === arr.findIndex(x => {
+                    const aId = x.orderId ?? x.tradeId ?? `${x.time}-${x.symbol}-${x.type}`;
+                    const bId = t.orderId ?? t.tradeId ?? `${t.time}-${t.symbol}-${t.type}`;
+                    return aId === bId && x.symbol === t.symbol && x.type === t.type;
+                }));
             tBody.innerHTML = sortedTrades.slice(0, 5).map(t => {
                 const isBuy = (t.type==='BUY'||t.type==='買入');
                 const tag = t.isManualSync || t.syncSource === 'binance-myTrades'
