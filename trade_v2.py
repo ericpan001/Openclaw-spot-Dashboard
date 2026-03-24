@@ -86,6 +86,8 @@ class TradingBot:
         self.positions = read_json(POSITIONS_DB, {})
         self.trading_coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         self.last_events = []
+        self.last_balance_error_at = 0.0
+        self.balance_error_cooldown = 300
 
     def add_thought(self, msg: str):
         thoughts = read_json(THINKING_FILE, [])
@@ -158,11 +160,21 @@ class TradingBot:
             if klines[-1]["volume"] < klines[-2]["volume"]: cond.append("vol_down")
             if closes[-1] > min([k["low"] for k in klines[-15:]]): cond.append("above_low")
             if slope >= self.config.ma30_slope_min and len(cond) >= 3:
-                buy_amount_usdt = 32.0
+                if time.time() - self.last_balance_error_at < self.balance_error_cooldown:
+                    continue
+                buy_amount_usdt = 10.0
+                reserve_usdt = 3.0
+                if usdt_bal < (buy_amount_usdt + reserve_usdt):
+                    continue
                 qty = buy_amount_usdt / closes[-1]
                 if "BTC" in symbol: qty = round(qty, 5)
                 elif "ETH" in symbol: qty = round(qty, 4)
                 else: qty = round(qty, 2)
+                if qty <= 0:
+                    continue
+                est_cost = qty * closes[-1]
+                if est_cost > max(0.0, usdt_bal - reserve_usdt):
+                    continue
                 res = self.client.place_order(symbol, "BUY", "MARKET", quantity=qty)
                 if res.get("orderId") or res.get("status") == "FILLED":
                     self.positions[symbol] = {"entry": closes[-1], "qty": qty, "open_time": time.time(), "max_pnl": 0}
@@ -170,6 +182,9 @@ class TradingBot:
                     self.add_thought(f"🎯 {symbol} 買入成功 ({buy_amount_usdt} USDT)")
                     self._export_positions()
                     usdt_bal -= buy_amount_usdt
+                elif res.get("code") == -2010:
+                    self.last_balance_error_at = time.time()
+                    self.add_thought(f"⚠️ {symbol} 下單失敗：餘額不足，暫停 {self.balance_error_cooldown//60} 分鐘再試")
 
     def update_assets_file(self):
         try:
@@ -197,7 +212,12 @@ class TradingBot:
         self.check_positions()
         self.scan_and_trade()
         self.update_assets_file() # 每輪掃描都強制同步最新餘額
-        status = {"last_run": datetime.now().strftime("%H:%M:%S"), "balance": round(self.get_equity(), 2), "positions": len(self.positions)}
+        status = {
+            "last_run": datetime.now().strftime("%H:%M:%S"),
+            "balance": round(self.get_equity(), 2),
+            "positions": len(self.positions),
+            "balanceErrorCooldownUntil": int(self.last_balance_error_at + self.balance_error_cooldown) if self.last_balance_error_at else None
+        }
         write_json(STATUS_FILE, status)
         self._export_positions()
 
